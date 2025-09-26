@@ -128,6 +128,14 @@ uct_ze_copy_mem_reg(uct_md_h md, void *address, size_t length,
     return UCS_OK;
 }
 
+static ucs_status_t
+uct_ze_copy_mem_dereg(uct_md_h md, const uct_md_mem_dereg_params_t *params)
+{
+    /* memory de-registration is temporally not needed for ZE */
+    return UCS_OK;
+}
+
+
 static void uct_ze_copy_md_close(uct_md_h uct_md)
 {
     uct_ze_copy_md_t *md = ucs_derived_of(uct_md, uct_ze_copy_md_t);
@@ -248,9 +256,9 @@ static uct_md_ops_t md_ops = {
     .mem_free           = uct_ze_copy_mem_free,
     .mem_advise         = (uct_md_mem_advise_func_t)ucs_empty_function_return_unsupported,
     .mem_reg            = uct_ze_copy_mem_reg,
-    .mem_dereg          = ucs_empty_function_return_success,
+    .mem_dereg          = uct_ze_copy_mem_dereg,
     .mem_query          = uct_ze_copy_md_mem_query,
-    .mkey_pack          = ucs_empty_function_return_success,
+    .mkey_pack          = (uct_md_mkey_pack_func_t)ucs_empty_function_return_success,
     .mem_attach         = (uct_md_mem_attach_func_t)ucs_empty_function_return_unsupported,
     .detect_memory_type = uct_ze_copy_md_detect_memory_type,
 };
