@@ -103,5 +103,7 @@ ucs_status_t uct_ze_base_query_devices(uct_md_h md,
 
 UCS_MODULE_INIT()
 {
+    UCS_MODULE_FRAMEWORK_DECLARE(uct_ze);
+    UCS_MODULE_FRAMEWORK_LOAD(uct_ze, 0);
     return UCS_OK;
 }
