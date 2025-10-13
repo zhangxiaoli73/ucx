@@ -1265,6 +1265,7 @@ ucp_add_tl_resources(ucp_context_h context, ucp_md_index_t md_index,
 
     /* check what are the available uct resources */
     status = uct_md_query_tl_resources(md->md, &tl_resources, &num_tl_resources);
+    printf("[UCX] zl_debug query resource done: md component name = %s, num of resource = %d \n", md->rsc.md_name, num_tl_resources);
     if (status != UCS_OK) {
         ucs_error("Failed to query resources: %s", ucs_status_string(status));
         goto out;
@@ -1293,6 +1294,7 @@ ucp_add_tl_resources(ucp_context_h context, ucp_md_index_t md_index,
     /* copy only the resources enabled by user configuration */
     context->tl_rscs = tmp;
     for (i = 0; i < num_tl_resources; ++i) {
+        printf("[UCX] zl_debug resouce device name %s, tl name = %s \n", tl_resources[i].dev_name, tl_resources[i].tl_name);
         ucs_string_set_addf(&avail_devices[tl_resources[i].dev_type],
                             "'%s'(%s)", tl_resources[i].dev_name,
                             context->tl_cmpts[md->cmpt_index].attr.name);
@@ -1336,6 +1338,7 @@ static void ucp_report_unavailable(const ucs_config_names_array_t* cfg,
 
     found = 0;
     for (i = 0; i < cfg->count; i++) {
+        printf("[UCX] zl_debug cfg names = %s in ucp_report_unavailable with %s %s \n", cfg->names[i], title1, title2);
         if (!(mask & UCS_BIT(i)) && strcmp(cfg->names[i], UCP_RSC_CONFIG_ALL) &&
             !ucs_string_set_contains(avail_names, cfg->names[i])) {
             ucs_string_buffer_appendf(&unavail_strb, "%s'%s'",
@@ -1649,6 +1652,7 @@ ucp_add_component_resources(ucp_context_h context, ucp_rsc_index_t cmpt_index,
                     ucs_alloca(tl_cmpt->attr.md_resource_count *
                                sizeof(*uct_component_attr.md_resources));
     status = uct_component_query(tl_cmpt->cmpt, &uct_component_attr);
+    printf("[UCX] zl_debug to get component name = %s md resource cout = %u \n", uct_component_attr.name, (unsigned int)uct_component_attr.md_resource_count);
     if (status != UCS_OK) {
         goto out;
     }
@@ -1670,6 +1674,7 @@ ucp_add_component_resources(ucp_context_h context, ucp_rsc_index_t cmpt_index,
         status = ucp_fill_tl_md(context, cmpt_index,
                                 &uct_component_attr.md_resources[i],
                                 &context->tl_mds[md_index]);
+        printf("[UCX] zl_debug to get md resource name %s \n", uct_component_attr.md_resources[i].md_name);
         if (status != UCS_OK) {
             continue;
         }
@@ -1894,6 +1899,7 @@ static ucs_status_t ucp_fill_resources(ucp_context_h context,
     }
 
     status = uct_query_components(&uct_components, &num_uct_components);
+
     if (status != UCS_OK) {
         goto out_cleanup_avail_devices;
     }
@@ -1924,6 +1930,7 @@ static ucs_status_t ucp_fill_resources(ucp_context_h context,
                         UCT_COMPONENT_ATTR_FIELD_FLAGS;
         status = uct_component_query(context->tl_cmpts[i].cmpt,
                                      &context->tl_cmpts[i].attr);
+        printf("[UCX] zl_debug to get component name = %s \n",context->tl_cmpts[i].attr.name);
         if (status != UCS_OK) {
             goto err_free_resources;
         }
@@ -1968,6 +1975,7 @@ static ucs_status_t ucp_fill_resources(ucp_context_h context,
     if (config->warn_invalid_config) {
         UCS_STATIC_ASSERT(UCT_DEVICE_TYPE_NET == 0);
         for (dev_type = UCT_DEVICE_TYPE_NET; dev_type < UCT_DEVICE_TYPE_LAST; ++dev_type) {
+            printf("[UCX] zl_debug for loop device_type %d \n", dev_type);
             ucp_report_unavailable(&config->devices[dev_type],
                                    dev_cfg_masks[dev_type],
                                    uct_device_type_names[dev_type], " device",
