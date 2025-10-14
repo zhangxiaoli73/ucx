@@ -248,7 +248,9 @@ ucp_wireup_check_select_flags(const uct_tl_resource_desc_t *resource,
 {
     UCS_STRING_BUFFER_ONSTACK(missing_flags_str,
                               UCP_WIREUP_MAX_FLAGS_STRING_SIZE);
-
+    ucs_trace(UCT_TL_RESOURCE_DESC_FMT " : zl_debug to check %s, %s",
+          UCT_TL_RESOURCE_DESC_ARG(resource), title,
+          ucs_string_buffer_cstr(&missing_flags_str));
     if (!ucp_wireup_test_select_flags(select_flags, flags, flag_descs,
                                       &missing_flags_str)) {
         ucs_trace(UCT_TL_RESOURCE_DESC_FMT " : not suitable for %s, %s",
@@ -428,17 +430,24 @@ static UCS_F_NOINLINE ucs_status_t ucp_wireup_select_transport(
     UCS_STATIC_BITMAP_AND_INPLACE(&tl_bitmap, context->tl_bitmap);
     show_error   = (select_params->show_error && show_error);
 
+    ucs_info("[UCX/UCP] zl_debug: try to do %s transport to %s: %s", criteria->title,
+          address->name, tls_info);
+    ucp_context_print_info(context, stdout);
+    ucs_debug("zl_debug bit map compare: context bitmap is " UCT_TL_BITMAP_FMT " finalize bitmap is " UCT_TL_BITMAP_FMT " end",
+          UCT_TL_BITMAP_ARG(context->tl_bitmap),
+          UCT_TL_BITMAP_ARG(tl_bitmap));
+
     /* Check which remote addresses satisfy the criteria */
     UCS_STATIC_BITMAP_RESET_ALL(&addr_index_map);
     ucp_unpacked_address_for_each(ae, address) {
         addr_index = ucp_unpacked_address_index(address, ae);
         if (!(remote_dev_bitmap & UCS_BIT(ae->dev_index))) {
-            ucs_trace("addr[%d]: not in use, because on device[%d]",
+            ucs_trace("addr[%d]: zl_debug not in use, because on device[%d]",
                       addr_index, ae->dev_index);
             continue;
         } else if ((ae->md_index != UCP_NULL_RESOURCE) &&
                    !(remote_md_map & UCS_BIT(ae->md_index))) {
-            ucs_trace("addr[%d]: not in use, because on md[%d]", addr_index,
+            ucs_trace("addr[%d]: zl_debug not in use, because on md[%d]", addr_index,
                       ae->md_index);
             continue;
         }
@@ -453,14 +462,14 @@ static UCS_F_NOINLINE ucs_status_t ucp_wireup_select_transport(
                                           ae->iface_attr.flags,
                                           ucp_wireup_peer_flags,
                                           &missing_flags_str)) {
-            ucs_trace("addr[%d] %s: %s", addr_index,
+            ucs_trace("zl_debug addr[%d] %s: %s", addr_index,
                       ucp_find_tl_name_by_csum(context, ae->tl_name_csum),
                       ucs_string_buffer_cstr(&missing_flags_str));
             continue;
         }
 
         if (!ucs_test_all_flags(ae->iface_attr.flags, criteria->remote_event_flags)) {
-            ucs_trace("addr[%d] %s: no %s", addr_index,
+            ucs_trace("zl_debug addr[%d] %s: no %s", addr_index,
                       ucp_find_tl_name_by_csum(context, ae->tl_name_csum),
                       ucp_wireup_get_missing_flag_desc(ae->iface_attr.flags,
                                                        criteria->remote_event_flags,
@@ -495,6 +504,7 @@ static UCS_F_NOINLINE ucs_status_t ucp_wireup_select_transport(
         md_index       = context->tl_rscs[rsc_index].md_index;
         md_attr        = &context->tl_mds[md_index].attr;
         cmpt_attr      = ucp_cmpt_attr_by_md_index(context, md_index);
+        printf("[UCX/UCP] zl_debug with bitmap to get resource name " UCT_TL_RESOURCE_DESC_FMT "index %d \n", UCT_TL_RESOURCE_DESC_ARG(resource), rsc_index);
 
         if ((context->tl_rscs[rsc_index].flags & UCP_TL_RSC_FLAG_AUX) &&
             !(criteria->tl_rsc_flags & UCP_TL_RSC_FLAG_AUX)) {

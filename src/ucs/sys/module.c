@@ -303,7 +303,7 @@ void ucs_load_modules(const char *framework, const char *modules,
 
         ucs_module_debug("loading modules for %s", framework);
         modules_str = ucs_strdup(modules, "modules_list");
-        printf("[UCX/UCS] zl_debug to get framework %s and modules %s \n", framework, modules)
+        printf("[UCX/UCS] zl_debug to get framework %s and modules %s \n", framework, modules);
         if (modules_str != NULL) {
             saveptr     = NULL;
             module_name = strtok_r(modules_str, ":", &saveptr);

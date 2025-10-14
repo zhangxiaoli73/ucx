@@ -199,6 +199,8 @@ struct uct_component {
  */
 #define UCT_COMPONENT_REGISTER(_component) \
     UCS_STATIC_INIT { \
+        printf(">>> Registering component: %s\n", (_component)->name); \
+        fflush(stdout); \
         ucs_list_add_tail(&uct_components_list, &(_component)->list); \
     } \
     UCS_CONFIG_REGISTER_TABLE_ENTRY(&(_component)->md_config, &ucs_config_global_list); \

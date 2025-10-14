@@ -101,6 +101,15 @@ ucs_status_t uct_ze_base_query_devices(uct_md_h md,
                                       num_tl_devices_p);
 }
 
+UCS_STATIC_INIT
+{
+    UCT_ZE_FUNC_LOG_DEBUG(zeInit(0));
+}
+
+UCS_STATIC_CLEANUP
+{
+}
+
 UCS_MODULE_INIT()
 {
     UCS_MODULE_FRAMEWORK_DECLARE(uct_ze);
