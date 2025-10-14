@@ -1773,6 +1773,7 @@ ucp_wireup_try_select_lanes(ucp_ep_h ep, unsigned ep_init_flags,
     key->dst_version  = remote_address->dst_version;
     key->dst_md_cmpts = dst_md_storage;
 
+    ucs_debug("[UCX/wireup] zl_debug original bitmap is " UCT_TL_BITMAP_FMT " end", UCT_TL_BITMAP_ARG(tl_bitmap));
     status = ucp_wireup_select_lanes(ep, ep_init_flags, *tl_bitmap,
                                      remote_address, addr_indices, key, 1);
     if (status != UCS_OK) {
@@ -1842,6 +1843,11 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
 
     tl_bitmap = UCS_STATIC_BITMAP_AND(*local_tl_bitmap,
                                       worker->context->tl_bitmap);
+    ucs_debug("[UCX/wireup] zl_debug local bitmap is " UCT_TL_BITMAP_FMT " work context bitmap " UCT_TL_BITMAP_FMT " final bitmap is " UCT_TL_BITMAP_FMT " end",
+        UCT_TL_BITMAP_ARG(local_tl_bitmap),
+        UCT_TL_BITMAP_ARG(&worker->context->tl_bitmap),
+        UCT_TL_BITMAP_ARG(&tl_bitmap)
+    );
     ucs_assert(!UCS_STATIC_BITMAP_IS_ZERO(tl_bitmap));
 
     ucs_trace("ep %p: initialize lanes", ep);
@@ -1854,6 +1860,7 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
     }
 
     ucs_queue_head_init(&replay_pending_queue);
+    printf("[UCX/UCP/wireup] zl_debug bitmap " UCT_TL_BITMAP_FMT " before ucp_wireup_try_select_lanes", UCT_TL_BITMAP_ARG(&tl_bitmap));
     status = ucp_wireup_try_select_lanes(ep, ep_init_flags, &tl_bitmap,
                                          remote_address, addr_indices, &key,
                                         dst_mds_mem);
