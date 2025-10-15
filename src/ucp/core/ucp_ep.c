@@ -689,6 +689,8 @@ ucs_status_t ucp_worker_mem_type_eps_create(ucp_worker_h worker)
     unsigned addr_indices[UCP_MAX_LANES];
 
     ucs_memory_type_for_each(mem_type) {
+        printf("zl_debug in ucp_worker_mem_type_eps_create to loop mem type %d and name is %s, last memory type is %s \n",
+            mem_type, ucs_memory_type_names[mem_type], ucs_memory_type_names[mem_type], ucs_memory_type_names[UCS_MEMORY_TYPE_LAST]);
         ucp_context_memaccess_tl_bitmap(context, mem_type, 0, &mem_access_tls);
         if (UCP_MEM_IS_HOST(mem_type) ||
             UCS_STATIC_BITMAP_IS_ZERO(mem_access_tls)) {
@@ -699,12 +701,14 @@ ucs_status_t ucp_worker_mem_type_eps_create(ucp_worker_h worker)
                                   context->config.ext.worker_addr_version, NULL,
                                   UINT_MAX, &address_length, &address_buffer);
         if (status != UCS_OK) {
+            printf("zl_debug in ucp_worker_mem_type_eps_create to ucp_address_pack failed !!!");
             goto err_cleanup_eps;
         }
 
         status = ucp_address_unpack(worker, address_buffer, pack_flags,
                                     &local_address);
         if (status != UCS_OK) {
+            printf("zl_debug in ucp_worker_mem_type_eps_create to ucp_address_unpack failed !!!");
             goto err_free_address_buffer;
         }
 

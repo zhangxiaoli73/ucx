@@ -248,7 +248,7 @@ ucp_wireup_check_select_flags(const uct_tl_resource_desc_t *resource,
 {
     UCS_STRING_BUFFER_ONSTACK(missing_flags_str,
                               UCP_WIREUP_MAX_FLAGS_STRING_SIZE);
-
+    printf("zl_debug in ucp_wireup_check_select_flags to get resource " UCT_TL_RESOURCE_DESC_FMT " end \n", UCT_TL_RESOURCE_DESC_ARG(resource));
     if (!ucp_wireup_test_select_flags(select_flags, flags, flag_descs,
                                       &missing_flags_str)) {
         ucs_trace(UCT_TL_RESOURCE_DESC_FMT " : not suitable for %s, %s",
@@ -495,6 +495,8 @@ static UCS_F_NOINLINE ucs_status_t ucp_wireup_select_transport(
         md_index       = context->tl_rscs[rsc_index].md_index;
         md_attr        = &context->tl_mds[md_index].attr;
         cmpt_attr      = ucp_cmpt_attr_by_md_index(context, md_index);
+
+        printf("zl_debug only ");
 
         if ((context->tl_rscs[rsc_index].flags & UCP_TL_RSC_FLAG_AUX) &&
             !(criteria->tl_rsc_flags & UCP_TL_RSC_FLAG_AUX)) {
@@ -929,6 +931,9 @@ static UCS_F_NOINLINE ucs_status_t ucp_wireup_add_memaccess_lanes(
     ucp_wireup_memaccess_bitmap(context, mem_type, &mem_type_tl_bitmap);
     UCS_STATIC_BITMAP_AND_INPLACE(&mem_type_tl_bitmap, tl_bitmap);
 
+    ucs_debug("[UCX/wireup] zl_debug in ucp_wireup_add_memaccess_lanes mem_type_tl_bitmap is " UCT_TL_BITMAP_FMT " context bitmap is " UCT_TL_BITMAP_FMT " passed from api bitmap is " UCT_TL_BITMAP_FMT ", passed memory_type is %d end",
+        UCT_TL_BITMAP_ARG(&mem_type_tl_bitmap), UCT_TL_BITMAP_ARG(&context->tl_bitmap), UCT_TL_BITMAP_ARG(&tl_bitmap), mem_type
+    );
     status = ucp_wireup_select_transport(select_ctx, select_params,
                                          &mem_criteria, mem_type_tl_bitmap,
                                          remote_md_map, UINT64_MAX, UINT64_MAX,
@@ -949,6 +954,7 @@ static UCS_F_NOINLINE ucs_status_t ucp_wireup_add_memaccess_lanes(
     /* If could not find registered memory access lane, try to use emulation */
     if (status != UCS_OK) {
         if (!allow_am) {
+        printf("zl_debug in ucp_wireup_add_memaccess_lanes to select transport failed !!! \n");
             return status;
         }
 
@@ -975,6 +981,8 @@ static UCS_F_NOINLINE ucs_status_t ucp_wireup_add_memaccess_lanes(
     mem_criteria.lane_type       = lane_type;
 
     for (;;) {
+        ucs_debug("[UCX/wireup] zl_debug in ucp_wireup_add_memaccess_lanes tl_bitmap is " UCT_TL_BITMAP_FMT " end",
+            UCT_TL_BITMAP_ARG(&tl_bitmap));
         status = ucp_wireup_select_transport(select_ctx, select_params,
                                              &mem_criteria, tl_bitmap,
                                              remote_md_map, UINT64_MAX,
@@ -1170,7 +1178,7 @@ ucp_wireup_add_rma_lanes(const ucp_wireup_select_params_t *select_params,
                                      UCP_ADDR_IFACE_FLAG_GET, 0);
         ucp_wireup_init_select_flags(&criteria.local_iface_flags,
                                      UCT_IFACE_FLAG_PUT_SHORT |
-                                     UCT_IFACE_FLAG_PUT_BCOPY |
+                                      UCT_IFACE_FLAG_PUT_BCOPY |
                                      UCT_IFACE_FLAG_GET_BCOPY |
                                      UCT_IFACE_FLAG_PENDING, 0);
     }
@@ -1179,6 +1187,9 @@ ucp_wireup_add_rma_lanes(const ucp_wireup_select_params_t *select_params,
 
     tl_bitmap = ucp_tl_bitmap_max;
     ucs_memory_type_for_each(mem_type) {
+        printf("zl_debug in ucp_wireup_add_rma_lanes to get mem type %d \n", mem_type);
+        ucs_debug("[UCX/wireup] zl_debug in ucp_wireup_add_rma_lanes bitmap is " UCT_TL_BITMAP_FMT " end",
+        UCT_TL_BITMAP_ARG(&tl_bitmap));
         status = ucp_wireup_add_memaccess_lanes(select_params, ep_init_flags,
                                                 &criteria, mem_type, tl_bitmap,
                                                 UCP_LANE_TYPE_RMA, select_ctx);
@@ -2503,6 +2514,7 @@ ucp_wireup_search_lanes(const ucp_wireup_select_params_t *select_params,
 
     status = ucp_wireup_add_cm_lane(select_params, select_ctx);
     if (status != UCS_OK) {
+        printf("zL_debug in ucp_wireup_search_lanes to get ucp_wireup_add_cm_lane failed \n");
         return status;
     }
 
@@ -2510,6 +2522,7 @@ ucp_wireup_search_lanes(const ucp_wireup_select_params_t *select_params,
      * ucp_ep. Fast protocols are: RMA/AM/AMO/TAG */
     status = ucp_wireup_add_rma_lanes(select_params, select_ctx);
     if (status != UCS_OK) {
+        printf("zl_debug in ucp_wireup_search_lanes get ucp_wireup_add_rma_lanes failed !!!!!!!!!!! \n");
         return status;
     }
 
@@ -2799,6 +2812,10 @@ ucp_wireup_select_lanes(ucp_ep_h ep, unsigned ep_init_flags,
 
     UCS_STATIC_BITMAP_AND_INPLACE(&scalable_tl_bitmap, tl_bitmap);
 
+    ucp_context_print_info(worker->context, stdout);
+    ucs_debug("[UCX/wireup] zl_debug in ucp_wireup_select_lanes scalable_tl_bitmap is " UCT_TL_BITMAP_FMT " end",
+        UCT_TL_BITMAP_ARG(&scalable_tl_bitmap)
+    );
     if (!UCS_STATIC_BITMAP_IS_ZERO(scalable_tl_bitmap)) {
         ucp_wireup_select_params_init(&select_params, ep, ep_init_flags,
                                       remote_address, scalable_tl_bitmap, 0);
@@ -2812,7 +2829,9 @@ ucp_wireup_select_lanes(ucp_ep_h ep, unsigned ep_init_flags,
          * successful, repeat the selection procedure with full TL bitmap in
          * order to select best transports based on their scores only */
     }
-
+    ucs_debug("[UCX/wireup] zl_debug in ucp_wireup_select_lanes tl_bitmap is " UCT_TL_BITMAP_FMT " end",
+        UCT_TL_BITMAP_ARG(&tl_bitmap)
+    );
     ucp_wireup_select_params_init(&select_params, ep, ep_init_flags,
                                   remote_address, tl_bitmap, show_error);
     status = ucp_wireup_search_lanes(&select_params, key->err_mode,

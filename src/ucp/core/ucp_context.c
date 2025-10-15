@@ -2601,6 +2601,8 @@ ucs_status_t ucp_context_query(ucp_context_h context, ucp_context_attr_t *attr)
 void ucp_context_print_info(ucp_context_h context, FILE *stream)
 {
     ucp_rsc_index_t cmpt_index, md_index, rsc_index;
+    const uct_md_attr_v2_t md_attr;
+
 
     fprintf(stream, "#\n");
     fprintf(stream, "# UCP context\n");
@@ -2613,9 +2615,11 @@ void ucp_context_print_info(ucp_context_h context, FILE *stream)
     fprintf(stream, "#\n");
 
     for (md_index = 0; md_index < context->num_mds; ++md_index) {
-        fprintf(stream, "#            md %-2d :  component %-2d %s \n",
+        md_attr = context->tl_mds[md_index].attr;
+        fprintf(stream, "#            md %-2d :  component %-2d %s reg_mem_types is %d : access mem type is %d \n",
                 md_index, context->tl_mds[md_index].cmpt_index,
-                context->tl_mds[md_index].rsc.md_name);
+                context->tl_mds[md_index].rsc.md_name,
+                (int)md_attr->reg_mem_types, (int)md_attr->access_mem_types);
     }
 
     fprintf(stream, "#\n");
@@ -2694,6 +2698,7 @@ void ucp_context_memaccess_tl_bitmap(ucp_context_h context,
     ucp_md_index_t md_index;
     uint64_t mem_types;
 
+    ucp_context_print_info(context, stdout);
     UCS_STATIC_BITMAP_RESET_ALL(tl_bitmap);
     UCS_STATIC_BITMAP_FOR_EACH_BIT(rsc_index, &context->tl_bitmap) {
         md_index = context->tl_rscs[rsc_index].md_index;
@@ -2703,7 +2708,12 @@ void ucp_context_memaccess_tl_bitmap(ucp_context_h context,
         } else {
             mem_types = md_attr->access_mem_types;
         }
+
+        printf("zl_debug in ucp_context_memaccess_tl_bitmap to get rsc index as %d and get md index as %d, md name is %s ! Passed memory type is %d and queied reg_mem_type is %d accessed mem type is %d \n",
+                rsc_index, md_index, context->tl_mds[md_index].rsc.md_name, (int)md_attr->reg_mem_types, (int)md_attr->access_mem_types);
+
         if (mem_types & UCS_BIT(mem_type)) {
+            printf("zl_debug in ucp_context_memaccess_tl_bitmap to set bitmap for memory_type %d \n", rsc_index);
             UCS_STATIC_BITMAP_SET(tl_bitmap, rsc_index);
         }
     }

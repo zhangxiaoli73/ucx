@@ -987,8 +987,10 @@ static ucs_status_t ucp_wireup_msg_handler(void *arg, void *data,
         ucs_assert(remote_address.address_count == 0);
         ucp_wireup_process_ack(worker, ep, msg);
     } else if (msg->type == UCP_WIREUP_MSG_PRE_REQUEST) {
+        printf("[UCP/wireup] zl_debug msg type is UCP_WIREUP_MSG_PRE_REQUEST \n");
         ucp_wireup_process_pre_request(worker, ep, msg, &remote_address);
     } else if (msg->type == UCP_WIREUP_MSG_REQUEST) {
+        printf("[UCP/wireup] zl_debug msg type is UCP_WIREUP_MSG_REQUEST \n");
         ucp_wireup_process_request(worker, ep, msg, &remote_address);
     } else if (msg->type == UCP_WIREUP_MSG_REPLY) {
         ucp_wireup_process_reply(worker, ep, msg, &remote_address);
@@ -1773,6 +1775,8 @@ ucp_wireup_try_select_lanes(ucp_ep_h ep, unsigned ep_init_flags,
     key->dst_version  = remote_address->dst_version;
     key->dst_md_cmpts = dst_md_storage;
 
+    ucs_debug("[UCP/wireup] zl_debug in ucp_wireup_try_select_lanes with bitmap is " UCT_TL_BITMAP_FMT " end",
+        UCT_TL_BITMAP_ARG(tl_bitmap));
     status = ucp_wireup_select_lanes(ep, ep_init_flags, *tl_bitmap,
                                      remote_address, addr_indices, key, 1);
     if (status != UCS_OK) {
@@ -1840,8 +1844,11 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
     ucp_rsc_index_t dst_mds_mem[UCP_MAX_MDS];
     int is_reconfigurable;
 
+    ucp_context_print_info(worker->context, stdout);
     tl_bitmap = UCS_STATIC_BITMAP_AND(*local_tl_bitmap,
                                       worker->context->tl_bitmap);
+    ucs_debug("[UCP/wireup] zl_debug in ucp_wireup_init_lanes with bitmap is " UCT_TL_BITMAP_FMT " end",
+        UCT_TL_BITMAP_ARG(&tl_bitmap));
     ucs_assert(!UCS_STATIC_BITMAP_IS_ZERO(tl_bitmap));
 
     ucs_trace("ep %p: initialize lanes", ep);
