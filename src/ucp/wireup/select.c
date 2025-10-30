@@ -20,6 +20,7 @@
 #include <ucp/core/ucp_ep.inl>
 #include <string.h>
 #include <inttypes.h>
+#include "uct/base/uct_component.h"
 
 #define UCP_WIREUP_RMA_BW_TEST_MSG_SIZE    262144
 #define UCP_WIREUP_MAX_FLAGS_STRING_SIZE   50
@@ -422,19 +423,17 @@ static UCS_F_NOINLINE ucs_status_t ucp_wireup_select_transport(
     double score;
     uint8_t priority;
     ucp_md_index_t md_index;
+    ucp_tl_cmpt_t *tl;
 
     p            = tls_info;
     endp         = tls_info + sizeof(tls_info) - 1;
     tls_info[0]  = '\0';
-    ucs_debug("zl_debug original bitmap is " UCT_TL_BITMAP_FMT " end ", UCT_TL_BITMAP_ARG(&tl_bitmap));
+    ucs_info("zl_debug original bitmap is " UCT_TL_BITMAP_FMT " end ", UCT_TL_BITMAP_ARG(&tl_bitmap));
     UCS_STATIC_BITMAP_AND_INPLACE(&tl_bitmap, select_params->tl_bitmap);
     UCS_STATIC_BITMAP_AND_INPLACE(&tl_bitmap, context->tl_bitmap);
     show_error   = (select_params->show_error && show_error);
 
-    ucs_info("[UCX/UCP] zl_debug: try to do %s transport to %s: %s", criteria->title,
-          address->name, tls_info);
-    ucp_context_print_info(context, stdout);
-    ucs_debug("zl_debug bit map compare: context bitmap is " UCT_TL_BITMAP_FMT " finalize bitmap is " UCT_TL_BITMAP_FMT " selected params bit map " UCT_TL_BITMAP_FMT "end ",
+    ucs_info("zl_debug bit map compare: context bitmap is " UCT_TL_BITMAP_FMT " finalize bitmap is " UCT_TL_BITMAP_FMT " selected params bit map " UCT_TL_BITMAP_FMT "end ",
           UCT_TL_BITMAP_ARG(&context->tl_bitmap),
           UCT_TL_BITMAP_ARG(&tl_bitmap),
           UCT_TL_BITMAP_ARG(&select_params->tl_bitmap));
@@ -490,6 +489,7 @@ static UCS_F_NOINLINE ucs_status_t ucp_wireup_select_transport(
     if (UCS_STATIC_BITMAP_IS_ZERO(addr_index_map)) {
         snprintf(p, endp - p, "%s  ", ucs_status_string(UCS_ERR_UNSUPPORTED));
         p += strlen(p);
+        printf("!!!!!!!!!! Something failure and goto out \n");
         goto out;
     }
 
@@ -506,7 +506,10 @@ static UCS_F_NOINLINE ucs_status_t ucp_wireup_select_transport(
         md_index       = context->tl_rscs[rsc_index].md_index;
         md_attr        = &context->tl_mds[md_index].attr;
         cmpt_attr      = ucp_cmpt_attr_by_md_index(context, md_index);
-        printf("[UCX/UCP] zl_debug with bitmap to get resource name " UCT_TL_RESOURCE_DESC_FMT "index %d \n", UCT_TL_RESOURCE_DESC_ARG(resource), rsc_index);
+        tl = &context->tl_cmpts[rsc_index];
+        
+	    printf("       MD name        = %s\n", context->tl_mds[md_index].rsc.md_name);
+        printf("       TL name        = %s\n", tl->cmpt->name);
 
         if ((context->tl_rscs[rsc_index].flags & UCP_TL_RSC_FLAG_AUX) &&
             !(criteria->tl_rsc_flags & UCP_TL_RSC_FLAG_AUX)) {
@@ -572,7 +575,10 @@ static UCS_F_NOINLINE ucs_status_t ucp_wireup_select_transport(
             p += strlen(p);
             snprintf(p, endp - p, ", ");
             p += strlen(p);
+            printf("zl_debug: check not pass - local md and interface satisfy the criteria \n");
             continue;
+        } else {
+            printf("zl_debug: check pass - local md and interface satisfy the criteria \n");
         }
 
         /* Check supplied tl & device bitmap */
@@ -660,10 +666,7 @@ out:
     }
 
     if (!found) {
-        if (show_error) {
-            ucs_error("no %s transport to %s: %s", criteria->title,
-                      address->name, tls_info);
-        }
+        ucs_error("no %s transport to %s: %s", criteria->title, address->name, tls_info);
 
         return UCS_ERR_UNREACHABLE;
     }
@@ -939,9 +942,11 @@ static UCS_F_NOINLINE ucs_status_t ucp_wireup_add_memaccess_lanes(
     mem_criteria.lane_type       = lane_type;
 
     ucp_wireup_memaccess_bitmap(context, mem_type, &mem_type_tl_bitmap);
+    ucs_info("zl_debug mem_type_tl_bitmap in ucp_wireup_add_memaccess_lanes is " UCT_TL_BITMAP_FMT " end ", UCT_TL_BITMAP_ARG(&mem_type_tl_bitmap));
+    ucs_info("zl_debug tl_bitmap passed to ucp_wireup_add_memaccess_lanes is " UCT_TL_BITMAP_FMT " end ", UCT_TL_BITMAP_ARG(&tl_bitmap));
     UCS_STATIC_BITMAP_AND_INPLACE(&mem_type_tl_bitmap, tl_bitmap);
 
-    printf("zl_debug in ucp_wireup_add_memaccess_lanes");
+    printf("zl_debug in ucp_wireup_add_memaccess_lanes to do first ucp_wireup_select_transport \n ");
     status = ucp_wireup_select_transport(select_ctx, select_params,
                                          &mem_criteria, mem_type_tl_bitmap,
                                          remote_md_map, UINT64_MAX, UINT64_MAX,
@@ -988,7 +993,7 @@ static UCS_F_NOINLINE ucs_status_t ucp_wireup_add_memaccess_lanes(
     mem_criteria.lane_type       = lane_type;
 
     for (;;) {
-        printf("zl_debug in ucp_wireup_add_memaccess_lanes");
+        printf("zl_debug in ucp_wireup_add_memaccess_lanes to do second ucp_wireup_select_transport \n");
         status = ucp_wireup_select_transport(select_ctx, select_params,
                                              &mem_criteria, tl_bitmap,
                                              remote_md_map, UINT64_MAX,
@@ -1192,6 +1197,9 @@ ucp_wireup_add_rma_lanes(const ucp_wireup_select_params_t *select_params,
     ucp_wireup_fill_peer_err_criteria(&criteria, ep_init_flags);
 
     tl_bitmap = ucp_tl_bitmap_max;
+//    printf("zl_debug in ucp_wireup_add_rma_lanes \n");
+    ucs_info("zl_debug bitmap in ucp_wireup_add_rma_lanes is " UCT_TL_BITMAP_FMT " end ", UCT_TL_BITMAP_ARG(&tl_bitmap));'
+
     ucs_memory_type_for_each(mem_type) {
         status = ucp_wireup_add_memaccess_lanes(select_params, ep_init_flags,
                                                 &criteria, mem_type, tl_bitmap,
@@ -1500,7 +1508,7 @@ ucp_wireup_add_am_lane(const ucp_wireup_select_params_t *select_params,
             criteria.local_event_flags = UCP_WIREUP_UCT_EVENT_CAP_FLAGS;
         }
 
-        printf("zl_debug in ucp_wireup_add_am_lane");
+//        printf("zl_debug in ucp_wireup_add_am_lane");
         status = ucp_wireup_select_transport(select_ctx, select_params,
                                              &criteria, tl_bitmap, UINT64_MAX,
                                              UINT64_MAX, UINT64_MAX, 1,
@@ -1695,7 +1703,7 @@ ucp_wireup_add_bw_lanes_a2a(const ucp_wireup_select_params_t *select_params,
     ucs_for_each_bit(local_dev_index, local_dev_bitmap) {
         ucs_for_each_bit(remote_dev_index, remote_dev_bitmap) {
             sinfo  = ucs_array_append(&sinfo_array, break);
-            printf("zl_debug in ucp_wireup_add_bw_lanes_a2a");
+//            printf("zl_debug in ucp_wireup_add_bw_lanes_a2a");
             status = ucp_wireup_select_transport(select_ctx, select_params,
                                                  &bw_info->criteria, tl_bitmap,
                                                  UINT64_MAX,
@@ -1794,7 +1802,7 @@ static int ucp_wireup_add_bw_lanes_pairwise(
     while (ucs_array_length(&sinfo_array) < bw_info->max_lanes) {
         if (excl_lane == UCP_NULL_LANE) {
             sinfo  = ucs_array_append(&sinfo_array, break);
-            printf("zl_debug in ucp_wireup_add_bw_lanes_pairwise");
+//            printf("zl_debug in ucp_wireup_add_bw_lanes_pairwise");
             status = ucp_wireup_select_transport(select_ctx, select_params,
                                                  &bw_info->criteria, tl_bitmap,
                                                  UINT64_MAX, local_dev_bitmap,
@@ -2277,7 +2285,7 @@ ucp_wireup_add_tag_lane(const ucp_wireup_select_params_t *select_params,
 
     /* Do not add tag offload lane, if selected tag lane score is lower
      * than AM score. In this case AM will be used for tag matching. */
-    printf("zl_debug in ucp_wireup_add_tag_lane");
+//    printf("zl_debug in ucp_wireup_add_tag_lane");
     status = ucp_wireup_select_transport(select_ctx, select_params, &criteria,
                                          ucp_tl_bitmap_max, UINT64_MAX,
                                          UINT64_MAX, UINT64_MAX, 0,
@@ -2432,7 +2440,7 @@ ucp_wireup_add_keepalive_lane(const ucp_wireup_select_params_t *select_params,
     criteria.lane_type          = UCP_LANE_TYPE_KEEPALIVE;
     ucp_wireup_fill_peer_err_criteria(&criteria, ep_init_flags);
 
-    printf("zl_debug in ucp_wireup_add_keepalive_lane ");
+//    printf("zl_debug in ucp_wireup_add_keepalive_lane ");
     status = ucp_wireup_select_transport(select_ctx, select_params, &criteria,
                                          *tl_bitmap, UINT64_MAX, UINT64_MAX,
                                          UINT64_MAX, 0, &select_info);
@@ -2825,7 +2833,10 @@ ucp_wireup_select_lanes(ucp_ep_h ep, unsigned ep_init_flags,
         status = ucp_wireup_search_lanes(&select_params, key->err_mode,
                                          &select_ctx);
         if (status == UCS_OK) {
+            printf("First time to ucp_wireup_search_lanes pass \n");
             goto out;
+        } else {
+            printf("First time to ucp_wireup_search_lanes failed and try again \n");
         }
 
         /* If the transport selection based on the scalable TL bitmap wasn't
@@ -2838,7 +2849,10 @@ ucp_wireup_select_lanes(ucp_ep_h ep, unsigned ep_init_flags,
     status = ucp_wireup_search_lanes(&select_params, key->err_mode,
                                      &select_ctx);
     if (status != UCS_OK) {
+        printf("Second time to ucp_wireup_search_lanes failed \n");
         return status;
+    } else {
+        printf("Second time to ucp_wireup_search_lanes Pass \n");
     }
 
 out:
@@ -2875,7 +2889,7 @@ ucp_wireup_select_aux_transport(ucp_ep_h ep, unsigned ep_init_flags,
     /* Select auxiliary transport that supports async active message callback */
     ucp_wireup_fill_aux_criteria(&criteria, ep_init_flags,
                                  UCP_ADDR_IFACE_FLAG_CB_ASYNC);
-    printf("zl_debug in ucp_wireup_select_aux_transport ");
+//    printf("zl_debug in ucp_wireup_select_aux_transport ");
     status = ucp_wireup_select_transport(&select_ctx, &select_params, &criteria,
                                          ucp_tl_bitmap_max, UINT64_MAX,
                                          UINT64_MAX, UINT64_MAX, 0,

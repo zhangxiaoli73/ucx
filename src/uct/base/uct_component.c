@@ -66,7 +66,7 @@ ucs_status_t uct_query_components(uct_component_h **components_p,
     *components_p     = components;
 
     ucs_list_for_each(component, &uct_components_list, list) {
-        printf("[UCX/UCT] zl_debug query component name = %s \n", component->name);
+//        printf("[UCX/UCT] zl_debug query component name = %s \n", component->name);
         *(components++) = component;
         ucs_vfs_obj_add_dir(NULL, component, "uct/component/%s",
                             component->name);
@@ -87,7 +87,7 @@ ucs_status_t uct_component_query(uct_component_h component,
     unsigned num_resources            = 0;
     ucs_status_t status;
 
-    printf("[UCX/UCT] zl_debug component name %s \n", component->name);
+//    printf("[UCX/UCT] zl_debug component name %s \n", component->name);
 
     if (component_attr->field_mask & (UCT_COMPONENT_ATTR_FIELD_MD_RESOURCE_COUNT|
                                       UCT_COMPONENT_ATTR_FIELD_MD_RESOURCES)) {

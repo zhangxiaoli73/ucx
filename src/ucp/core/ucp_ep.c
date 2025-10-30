@@ -714,7 +714,7 @@ ucs_status_t ucp_worker_mem_type_eps_create(ucp_worker_h worker)
         /* create memtype UCP EPs after blocking async context, because they set
          * INTERNAL flag (setting EP flags is expected to be guarded) */
         UCS_ASYNC_BLOCK(&worker->async);
-        printf("[UCX/UCP/EP] zl_debug in ucp_worker_mem_type_eps_create");
+        printf("[UCX/UCP/EP] zl_debug start to ucp_ep_create_to_worker_addr with memoty type %d \n", mem_type);
         status = ucp_ep_create_to_worker_addr(worker, &ucp_tl_bitmap_max,
                                               &local_address,
                                               UCP_EP_INIT_FLAG_MEM_TYPE |
@@ -722,8 +722,11 @@ ucs_status_t ucp_worker_mem_type_eps_create(ucp_worker_h worker)
                                               ep_name, addr_indices,
                                               &worker->mem_type_ep[mem_type]);
         if (status != UCS_OK) {
+            printf("[UCX/UCP/EP] zl_debug failed to ucp_ep_create_to_worker_addr");
             UCS_ASYNC_UNBLOCK(&worker->async);
             goto err_free_address_list;
+        } else {
+            printf("[UCX/UCP/EP] zl_debug passed to ucp_ep_create_to_worker_addr");
         }
 
         UCS_ASYNC_UNBLOCK(&worker->async);
@@ -840,7 +843,7 @@ ucp_ep_create_to_worker_addr(ucp_worker_h worker,
     }
 
     /* initialize transport endpoints */
-    printf("[UCX/CUP/EP] zl_debug try to ucp_wireup_init_lanes");
+//    printf("[UCX/CUP/EP] zl_debug try to ucp_wireup_init_lanes");
     status = ucp_wireup_init_lanes(ep, ep_init_flags, local_tl_bitmap,
                                    remote_address, addr_indices,
                                    &am_need_flush);
@@ -1096,7 +1099,7 @@ ucp_ep_create_api_to_worker_addr(ucp_worker_h worker,
         goto out_resolve_remote_id;
     }
 
-    printf("[UCX/UCP/EP] zl_debug in ucp_ep_create_api_to_worker_addr");
+//    printf("[UCX/UCP/EP] zl_debug in ucp_ep_create_api_to_worker_addr");
     status = ucp_ep_create_to_worker_addr(worker, &ucp_tl_bitmap_max,
                                           &remote_address, ep_init_flags,
                                           "from api call", addr_indices, &ep);

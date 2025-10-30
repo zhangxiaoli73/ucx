@@ -1860,11 +1860,11 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
     }
 
     ucs_queue_head_init(&replay_pending_queue);
-    printf("[UCX/UCP/wireup] zl_debug bitmap " UCT_TL_BITMAP_FMT " before ucp_wireup_try_select_lanes", UCT_TL_BITMAP_ARG(&tl_bitmap));
+//    printf("[UCX/UCP/wireup] zl_debug bitmap " UCT_TL_BITMAP_FMT " before ucp_wireup_try_select_lanes", UCT_TL_BITMAP_ARG(&tl_bitmap));
     status = ucp_wireup_try_select_lanes(ep, ep_init_flags, &tl_bitmap,
                                          remote_address, addr_indices, &key,
                                         dst_mds_mem);
-    printf("[UCX/UCP/wireup] zl_debug start to ucp_wireup_try_select_lanes with status %d \n", status);
+//    printf("[UCX/UCP/wireup] zl_debug start to ucp_wireup_try_select_lanes with status %d \n", status);
     if (status != UCS_OK) {
         goto out;
     }
