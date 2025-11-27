@@ -76,24 +76,35 @@ uct_ze_ipc_iface_is_reachable_v2(const uct_iface_h tl_iface,
 {
     uint64_t *dev_addr;
     int same_uuid;
+    int result;
 
     if (!uct_iface_is_reachable_params_addrs_valid(params)) {
+        ucs_debug("ze_ipc: is_reachable_v2 - addrs not valid");
         return 0;
     }
 
     dev_addr  = (uint64_t *)params->device_addr;
     same_uuid = (ucs_get_system_id() == *dev_addr);
 
+    ucs_info("ze_ipc: is_reachable_v2 - local_system_id=0x%lx remote_dev_addr=0x%lx "
+             "same_uuid=%d local_pid=%d remote_pid=%d",
+             (unsigned long)ucs_get_system_id(), (unsigned long)*dev_addr,
+             same_uuid, getpid(), *(pid_t*)params->iface_addr);
+
     if ((getpid() == *(pid_t*)params->iface_addr) && same_uuid) {
         uct_iface_fill_info_str_buf(params, "same process");
+        ucs_info("ze_ipc: is_reachable_v2 - rejected: same process");
         return 0;
     }
 
     if (same_uuid) {
-        return uct_iface_scope_is_reachable(tl_iface, params);
+        result = uct_iface_scope_is_reachable(tl_iface, params);
+        ucs_info("ze_ipc: is_reachable_v2 - same system, scope_is_reachable=%d", result);
+        return result;
     }
 
     uct_iface_fill_info_str_buf(params, "different system");
+    ucs_info("ze_ipc: is_reachable_v2 - rejected: different system");
     return 0;
 }
 
@@ -225,6 +236,42 @@ static uct_iface_ops_t uct_ze_ipc_iface_ops = {
 static ucs_status_t
 uct_ze_ipc_estimate_perf(uct_iface_h tl_iface, uct_perf_attr_t *perf_attr)
 {
+    uct_ze_ipc_iface_t *iface = ucs_derived_of(tl_iface, uct_ze_ipc_iface_t);
+
+    if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_BANDWIDTH) {
+        perf_attr->bandwidth.dedicated = 0;
+        perf_attr->bandwidth.shared    = iface->config.bandwidth;
+    }
+
+    if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_PATH_BANDWIDTH) {
+        perf_attr->path_bandwidth.dedicated = 0;
+        perf_attr->path_bandwidth.shared    = iface->config.bandwidth;
+    }
+
+    if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_SEND_PRE_OVERHEAD) {
+        perf_attr->send_pre_overhead = iface->config.overhead;
+    }
+
+    if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_SEND_POST_OVERHEAD) {
+        perf_attr->send_post_overhead = 0;
+    }
+
+    if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_RECV_OVERHEAD) {
+        perf_attr->recv_overhead = 0;
+    }
+
+    if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_LATENCY) {
+        perf_attr->latency = ucs_linear_func_make(iface->config.latency, 0.0);
+    }
+
+    if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_MAX_INFLIGHT_EPS) {
+        perf_attr->max_inflight_eps = SIZE_MAX;
+    }
+
+    if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_FLAGS) {
+        perf_attr->flags = 0;
+    }
+
     return UCS_OK;
 }
 
@@ -272,7 +319,7 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
     ret = zeCommandQueueCreate(self->ze_context, self->ze_device, &queue_desc,
                                &self->cmd_queue);
     if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("zeCommandQueueCreate failed with error 0x%x", ret);
+        ucs_error("ze_ipc_iface: zeCommandQueueCreate failed with error 0x%x", ret);
         return UCS_ERR_IO_ERROR;
     }
 
@@ -280,12 +327,15 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
     ret = zeCommandListCreate(self->ze_context, self->ze_device, &list_desc,
                               &self->cmd_list);
     if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("zeCommandListCreate failed with error 0x%x", ret);
+        ucs_error("ze_ipc_iface: zeCommandListCreate failed with error 0x%x", ret);
         zeCommandQueueDestroy(self->cmd_queue);
         return UCS_ERR_IO_ERROR;
     }
 
     ucs_queue_head_init(&self->outstanding);
+
+    ucs_info("ze_ipc_iface: initialized iface for device %p context %p (pid=%d)",
+             self->ze_device, self->ze_context, getpid());
 
     return UCS_OK;
 }

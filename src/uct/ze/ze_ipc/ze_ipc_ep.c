@@ -31,6 +31,9 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_ep_t, const uct_ep_params_t *params)
     UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super);
 
     self->remote_pid = *(const pid_t*)params->iface_addr;
+
+    ucs_info("ze_ipc_ep: created endpoint to remote pid %d (local pid %d)",
+             self->remote_pid, getpid());
     return UCS_OK;
 }
 
@@ -83,13 +86,21 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
         return UCS_OK;
     }
 
+    ucs_info("ze_ipc_ep: post_copy direction=%s remote_addr=0x%lx length=%zu "
+             "key->address=0x%lx key->length=%zu",
+             (direction == UCT_ZE_IPC_PUT) ? "PUT" : "GET",
+             (unsigned long)remote_addr, iov[0].length,
+             (unsigned long)key->address, key->length);
+
     /* Open IPC handle to get mapped address */
     ret = zeMemOpenIpcHandle(iface->ze_context, iface->ze_device,
                              key->ipc_handle, 0, &mapped_addr);
     if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("zeMemOpenIpcHandle failed with error 0x%x", ret);
+        ucs_error("ze_ipc_ep: zeMemOpenIpcHandle failed with error 0x%x", ret);
         return UCS_ERR_IO_ERROR;
     }
+
+    ucs_debug("ze_ipc_ep: zeMemOpenIpcHandle succeeded, mapped_addr=%p", mapped_addr);
 
     /* Calculate offset within the allocation */
     offset          = remote_addr - key->address;
@@ -205,9 +216,13 @@ UCS_PROFILE_FUNC(ucs_status_t, uct_ze_ipc_ep_get_zcopy,
 {
     ucs_status_t status;
 
+    ucs_info("ze_ipc_ep: GET_ZCOPY called remote_addr=0x%lx iovcnt=%zu total_len=%zu",
+             (unsigned long)remote_addr, iovcnt, uct_iov_total_length(iov, iovcnt));
+
     status = uct_ze_ipc_post_copy(tl_ep, remote_addr, iov, rkey, comp,
                                   UCT_ZE_IPC_GET);
     if (UCS_STATUS_IS_ERR(status)) {
+        ucs_error("ze_ipc_ep: GET_ZCOPY failed with status %s", ucs_status_string(status));
         return status;
     }
 
@@ -227,9 +242,13 @@ UCS_PROFILE_FUNC(ucs_status_t, uct_ze_ipc_ep_put_zcopy,
 {
     ucs_status_t status;
 
+    ucs_info("ze_ipc_ep: PUT_ZCOPY called remote_addr=0x%lx iovcnt=%zu total_len=%zu",
+             (unsigned long)remote_addr, iovcnt, uct_iov_total_length(iov, iovcnt));
+
     status = uct_ze_ipc_post_copy(tl_ep, remote_addr, iov, rkey, comp,
                                   UCT_ZE_IPC_PUT);
     if (UCS_STATUS_IS_ERR(status)) {
+        ucs_error("ze_ipc_ep: PUT_ZCOPY failed with status %s", ucs_status_string(status));
         return status;
     }
 

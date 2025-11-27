@@ -93,10 +93,16 @@ uct_ze_base_query_md_resources(uct_component_h component,
                                uct_md_resource_desc_t **resources_p,
                                unsigned *num_resources_p)
 {
-    if (uct_ze_base_init() != ZE_RESULT_SUCCESS) {
-        ucs_debug("could not initialize ZE support");
+    ze_result_t ret;
+
+    ret = uct_ze_base_init();
+    if (ret != ZE_RESULT_SUCCESS) {
+        ucs_info("ze_base: could not initialize ZE support (result=0x%x)", ret);
         return uct_md_query_empty_md_resource(resources_p, num_resources_p);
     }
+
+    ucs_info("ze_base: query_md_resources for component=%s num_devices=%u",
+             component->name, uct_ze_base_info.num_devices);
 
     return uct_md_query_single_md_resource(component, resources_p,
                                            num_resources_p);
@@ -107,6 +113,9 @@ ucs_status_t uct_ze_base_query_devices(uct_md_h md,
                                        uct_tl_device_resource_t **tl_devices_p,
                                        unsigned *num_tl_devices_p)
 {
+    ucs_info("ze_base: query_devices for md component=%s type=ACC",
+             md->component->name);
+
     return uct_single_device_resource(md, md->component->name,
                                       UCT_DEVICE_TYPE_ACC,
                                       UCS_SYS_DEVICE_ID_UNKNOWN, tl_devices_p,
@@ -119,6 +128,9 @@ uct_ze_base_query_devices_common(uct_md_h md, uct_device_type_t dev_type,
                                  uct_tl_device_resource_t **tl_devices_p,
                                  unsigned *num_tl_devices_p)
 {
+    ucs_info("ze_base: query_devices_common for md component=%s type=%d",
+             md->component->name, dev_type);
+
     return uct_single_device_resource(md, md->component->name, dev_type,
                                       UCS_SYS_DEVICE_ID_UNKNOWN, tl_devices_p,
                                       num_tl_devices_p);

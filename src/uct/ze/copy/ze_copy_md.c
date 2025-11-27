@@ -275,27 +275,30 @@ uct_ze_copy_md_open(uct_component_h component, const char *md_name,
     ze_context_desc_t context_desc = {};
     ze_result_t ret;
 
+    ucs_info("ze_copy_md: md_open called md_name=%s", md_name);
+
     ze_driver = uct_ze_base_get_driver();
     if (ze_driver == NULL) {
+        ucs_error("ze_copy_md: uct_ze_base_get_driver returned NULL");
         return UCS_ERR_NO_DEVICE;
     }
 
     md = ucs_malloc(sizeof(uct_ze_copy_md_t), "uct_ze_copy_md_t");
     if (NULL == md) {
-        ucs_error("Failed to allocate memory for uct_ze_copy_md_t");
+        ucs_error("ze_copy_md: Failed to allocate memory for uct_ze_copy_md_t");
         return UCS_ERR_NO_MEMORY;
     }
 
     md->ze_device = uct_ze_base_get_device(config->device_ordinal);
     if (md->ze_device == NULL) {
-        ucs_error("Failed to get device at ordial %d", config->device_ordinal);
+        ucs_error("ze_copy_md: Failed to get device at ordinal %d", config->device_ordinal);
         ucs_free(md);
         return UCS_ERR_NO_DEVICE;
     }
 
     ret = zeContextCreate(ze_driver, &context_desc, &md->ze_context);
     if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("zeContextCreate failed with error %x", ret);
+        ucs_error("ze_copy_md: zeContextCreate failed with error 0x%x", ret);
         ucs_free(md);
         return UCS_ERR_NO_DEVICE;
     }
@@ -304,6 +307,10 @@ uct_ze_copy_md_open(uct_component_h component, const char *md_name,
     md->super.component = &uct_ze_copy_component;
 
     *md_p = (uct_md_h)md;
+
+    ucs_info("ze_copy_md: md_open succeeded device=%p context=%p",
+             md->ze_device, md->ze_context);
+
     return UCS_OK;
 }
 

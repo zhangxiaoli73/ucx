@@ -115,17 +115,24 @@ uct_ze_ipc_mem_reg(uct_md_h uct_md, void *address, size_t length,
     uct_ze_ipc_key_t *key;
     ucs_status_t status;
 
+    ucs_info("ze_ipc_md: mem_reg called address=%p length=%zu", address, length);
+
     key = ucs_malloc(sizeof(*key), "uct_ze_ipc_key_t");
     if (key == NULL) {
-        ucs_error("failed to allocate memory for uct_ze_ipc_key_t");
+        ucs_error("ze_ipc_md: failed to allocate memory for uct_ze_ipc_key_t");
         return UCS_ERR_NO_MEMORY;
     }
 
     status = uct_ze_ipc_pack_key(md, address, length, key);
     if (status != UCS_OK) {
+        ucs_error("ze_ipc_md: pack_key failed for address=%p status=%s",
+                  address, ucs_status_string(status));
         ucs_free(key);
         return status;
     }
+
+    ucs_info("ze_ipc_md: mem_reg succeeded address=%p key->address=0x%lx key->length=%zu",
+             address, (unsigned long)key->address, key->length);
 
     *memh_p = key;
     return UCS_OK;
@@ -153,15 +160,20 @@ uct_ze_ipc_rkey_unpack(uct_component_t *component, const void *rkey_buffer,
     uct_ze_ipc_key_t *packed = (uct_ze_ipc_key_t *)rkey_buffer;
     uct_ze_ipc_key_t *key;
 
+    ucs_info("ze_ipc_md: rkey_unpack called packed->address=0x%lx packed->length=%zu",
+             (unsigned long)packed->address, packed->length);
+
     key = ucs_malloc(sizeof(uct_ze_ipc_key_t), "uct_ze_ipc_key_t");
     if (key == NULL) {
-        ucs_error("failed to allocate memory for uct_ze_ipc_key_t");
+        ucs_error("ze_ipc_md: failed to allocate memory for uct_ze_ipc_key_t");
         return UCS_ERR_NO_MEMORY;
     }
 
     *key      = *packed;
     *handle_p = NULL;
     *rkey_p   = (uintptr_t)key;
+
+    ucs_info("ze_ipc_md: rkey_unpack succeeded rkey=%p", (void*)*rkey_p);
 
     return UCS_OK;
 }
