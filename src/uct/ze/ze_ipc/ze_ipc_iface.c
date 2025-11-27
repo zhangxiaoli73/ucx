@@ -229,8 +229,10 @@ uct_ze_ipc_estimate_perf(uct_iface_h tl_iface, uct_perf_attr_t *perf_attr)
 }
 
 static uct_iface_internal_ops_t uct_ze_ipc_iface_internal_ops = {
+    .iface_query_v2         = uct_iface_base_query_v2,
     .iface_estimate_perf    = uct_ze_ipc_estimate_perf,
     .iface_vfs_refresh      = (uct_iface_vfs_refresh_func_t)ucs_empty_function,
+    .iface_mem_element_pack = (uct_iface_mem_element_pack_func_t)ucs_empty_function_return_unsupported,
     .ep_query               = (uct_ep_query_func_t)ucs_empty_function_return_unsupported,
     .ep_invalidate          = (uct_ep_invalidate_func_t)ucs_empty_function_return_unsupported,
     .ep_connect_to_ep_v2    = (uct_ep_connect_to_ep_v2_func_t)ucs_empty_function_return_unsupported,
@@ -256,10 +258,12 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
                               &uct_ze_ipc_iface_internal_ops, md, worker,
                               params, tl_config
                               UCS_STATS_ARG(params->stats_root)
-                              UCS_STATS_ARG("ze_ipc"));
+                              UCS_STATS_ARG(UCT_ZE_IPC_TL_NAME));
 
     self->ze_context     = ze_md->ze_context;
     self->ze_device      = ze_md->ze_device;
+    self->cmd_queue      = NULL;
+    self->cmd_list       = NULL;
     self->config         = *config;
 
     /* Create command queue */
@@ -299,13 +303,21 @@ static UCS_CLASS_CLEANUP_FUNC(uct_ze_ipc_iface_t)
         if (event_desc->mapped_addr != NULL) {
             zeMemCloseIpcHandle(self->ze_context, event_desc->mapped_addr);
         }
-        zeEventDestroy(event_desc->event);
-        zeEventPoolDestroy(event_desc->event_pool);
+        if (event_desc->event != NULL) {
+            zeEventDestroy(event_desc->event);
+        }
+        if (event_desc->event_pool != NULL) {
+            zeEventPoolDestroy(event_desc->event_pool);
+        }
         ucs_free(event_desc);
     }
 
-    zeCommandListDestroy(self->cmd_list);
-    zeCommandQueueDestroy(self->cmd_queue);
+    if (self->cmd_list != NULL) {
+        zeCommandListDestroy(self->cmd_list);
+    }
+    if (self->cmd_queue != NULL) {
+        zeCommandQueueDestroy(self->cmd_queue);
+    }
 }
 
 

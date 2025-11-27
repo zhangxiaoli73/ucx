@@ -52,7 +52,6 @@ uct_ze_ipc_mkey_pack(uct_md_h uct_md, uct_mem_h memh, void *address,
                      size_t length, const uct_md_mkey_pack_params_t *params,
                      void *mkey_buffer)
 {
-    uct_ze_ipc_md_t *md    = ucs_derived_of(uct_md, uct_ze_ipc_md_t);
     uct_ze_ipc_key_t *packed = mkey_buffer;
     uct_ze_ipc_key_t *key    = memh;
 
@@ -182,7 +181,9 @@ static void uct_ze_ipc_md_close(uct_md_h uct_md)
 {
     uct_ze_ipc_md_t *md = ucs_derived_of(uct_md, uct_ze_ipc_md_t);
 
-    zeContextDestroy(md->ze_context);
+    if (md->ze_context != NULL) {
+        zeContextDestroy(md->ze_context);
+    }
     ucs_free(md);
 }
 

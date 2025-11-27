@@ -164,6 +164,13 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
         goto err_cleanup;
     }
 
+    /* Synchronize to ensure command list execution is complete before reset */
+    ret = zeCommandQueueSynchronize(iface->cmd_queue, UINT64_MAX);
+    if (ret != ZE_RESULT_SUCCESS) {
+        ucs_error("zeCommandQueueSynchronize failed with error 0x%x", ret);
+        goto err_cleanup;
+    }
+
     /* Reset command list for next use */
     ret = zeCommandListReset(iface->cmd_list);
     if (ret != ZE_RESULT_SUCCESS) {

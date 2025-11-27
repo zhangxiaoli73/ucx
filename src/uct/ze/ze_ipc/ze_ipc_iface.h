@@ -13,6 +13,7 @@
 #include "ze_ipc_md.h"
 
 
+#define UCT_ZE_IPC_TL_NAME   "ze_ipc"
 #define UCT_ZE_IPC_MAX_PEERS 16
 
 
