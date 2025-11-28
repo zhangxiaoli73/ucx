@@ -23,6 +23,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#include <stdio.h>
+#include <time.h>
+
 #define UCT_ZE_IPC_PUT 0
 #define UCT_ZE_IPC_GET 1
 
@@ -134,6 +137,9 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     ze_result_t ret;
     int remote_fd, local_fd;
     int need_close_fd = 0;
+    struct timespec start1, start2, end;
+    double elapsed_ms1, elapsed_ms2, elapsed_ms3;
+    clock_gettime(CLOCK_MONOTONIC, &start1);
 
     if (ucs_unlikely(iov[0].length == 0)) {
         ucs_trace_data("Zero length request: skip it");
@@ -269,7 +275,8 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
         dst = iov[0].buffer;
         src = mapped_rem_addr;
     }
-
+    
+    clock_gettime(CLOCK_MONOTONIC, &start2);
     /* Append memory copy to command list */
     ret = zeCommandListAppendMemoryCopy(iface->cmd_list, dst, src,
                                         iov[0].length, event_desc->event,
@@ -315,6 +322,19 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
 
     ucs_trace("zeCommandListAppendMemoryCopy issued: dst=%p src=%p len=%zu",
               dst, src, iov[0].length);
+
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    elapsed_ms1 = (start2.tv_sec - start1.tv_sec) * 1000.0 +
+    (start2.tv_nsec - start1.tv_nsec) / 1000000.0;
+
+    elapsed_ms2 = (end.tv_sec - start2.tv_sec) * 1000.0 +
+    (end.tv_nsec - start2.tv_nsec) / 1000000.0;
+
+    elapsed_ms3 = (end.tv_sec - start1.tv_sec) * 1000.0 +
+    (end.tv_nsec - start1.tv_nsec) / 1000000.0;
+
+    ucs_info("Time cost: %.3f ms, time copy is %.3f, total_time is %.3f, total transfer size is %zu\n", elapsed_ms1,  elapsed_ms2, elapsed_ms3, iov[0].length);
 
     return UCS_INPROGRESS;
 
