@@ -44,6 +44,7 @@ typedef struct uct_ze_ipc_event_desc {
     void               *mapped_addr;
     uct_completion_t   *comp;
     ucs_queue_elem_t    queue;
+    int                 dup_fd;     /* duplicated fd to close, or -1 if none */
 } uct_ze_ipc_event_desc_t;
 
 

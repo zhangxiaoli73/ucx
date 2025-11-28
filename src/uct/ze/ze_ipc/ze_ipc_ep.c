@@ -19,8 +19,57 @@
 #include <ucs/type/class.h>
 #include <ucs/profile/profile.h>
 
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <fcntl.h>
+
 #define UCT_ZE_IPC_PUT 0
 #define UCT_ZE_IPC_GET 1
+
+/*
+ * Duplicate a file descriptor from another process using pidfd_getfd.
+ * This is needed because Level Zero IPC handles contain file descriptors
+ * that must be duplicated when transferred between processes.
+ *
+ * @param remote_pid  PID of the process that owns the fd
+ * @param remote_fd   File descriptor in the remote process
+ * @return            Local fd on success, -1 on error
+ */
+static int uct_ze_ipc_dup_fd_from_pid(pid_t remote_pid, int remote_fd)
+{
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_getfd)
+    int pidfd, local_fd;
+
+    /* Skip if same process */
+    if (remote_pid == getpid()) {
+        return remote_fd;
+    }
+
+    /* Open pidfd for the remote process */
+    pidfd = syscall(SYS_pidfd_open, remote_pid, 0);
+    if (pidfd < 0) {
+        ucs_error("ze_ipc: pidfd_open(%d) failed: %m", remote_pid);
+        return -1;
+    }
+
+    /* Duplicate the fd from remote process */
+    local_fd = syscall(SYS_pidfd_getfd, pidfd, remote_fd, 0);
+    if (local_fd < 0) {
+        ucs_error("ze_ipc: pidfd_getfd(pidfd=%d, remote_fd=%d) failed: %m",
+                  pidfd, remote_fd);
+        close(pidfd);
+        return -1;
+    }
+
+    close(pidfd);
+    ucs_debug("ze_ipc: duplicated fd %d from pid %d -> local fd %d",
+              remote_fd, remote_pid, local_fd);
+    return local_fd;
+#else
+    ucs_error("ze_ipc: pidfd_getfd not supported on this system");
+    return -1;
+#endif
+}
 
 
 static UCS_CLASS_INIT_FUNC(uct_ze_ipc_ep_t, const uct_ep_params_t *params)
@@ -72,15 +121,19 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
                      uct_completion_t *comp, int direction)
 {
     uct_ze_ipc_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_ze_ipc_iface_t);
+    uct_ze_ipc_ep_t *ep       = ucs_derived_of(tl_ep, uct_ze_ipc_ep_t);
     uct_ze_ipc_key_t *key     = (uct_ze_ipc_key_t *)rkey;
     uct_ze_ipc_event_desc_t *event_desc;
     ze_event_pool_desc_t event_pool_desc = {};
     ze_event_desc_t event_desc_ze = {};
+    ze_ipc_mem_handle_t local_handle;
     void *mapped_addr = NULL;
     void *mapped_rem_addr;
     void *dst, *src;
     size_t offset;
     ze_result_t ret;
+    int remote_fd, local_fd;
+    int need_close_fd = 0;
 
     if (ucs_unlikely(iov[0].length == 0)) {
         ucs_trace_data("Zero length request: skip it");
@@ -98,12 +151,13 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
         }
         ucs_info("OPEN(receiver): remote_dev=%d local_dev=%d checksum=0x%08x "
                  "handle[0-15]=%02x%02x%02x%02x%02x%02x%02x%02x"
-                 "%02x%02x%02x%02x%02x%02x%02x%02x",
+                 "%02x%02x%02x%02x%02x%02x%02x%02x remote_pid=%d local_pid=%d",
                  key->dev_num, local_dev_id, sum,
                  bytes[0], bytes[1], bytes[2], bytes[3],
                  bytes[4], bytes[5], bytes[6], bytes[7],
                  bytes[8], bytes[9], bytes[10], bytes[11],
-                 bytes[12], bytes[13], bytes[14], bytes[15]);
+                 bytes[12], bytes[13], bytes[14], bytes[15],
+                 ep->remote_pid, getpid());
     }
 
     ucs_info("ze_ipc_ep: post_copy direction=%s remote_addr=0x%lx length=%zu "
@@ -114,14 +168,41 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
              uct_ze_base_get_device_ordinal(iface->ze_device),
              (void*)iface->ze_context);
 
+    /*
+     * Level Zero IPC handles contain a file descriptor in the first 4 bytes.
+     * When IPC handle is transferred between processes (via UCX rkey mechanism),
+     * the fd is not valid in the receiving process. We need to duplicate the fd
+     * from the sender's process using pidfd_getfd().
+     */
+    memcpy(&local_handle, &key->ipc_handle, sizeof(local_handle));
+    remote_fd = *(int*)local_handle.data;
+
+    if (ep->remote_pid != getpid() && remote_fd > 0 && remote_fd < 65536) {
+        /* Cross-process case: need to duplicate fd */
+        local_fd = uct_ze_ipc_dup_fd_from_pid(ep->remote_pid, remote_fd);
+        if (local_fd < 0) {
+            ucs_error("ze_ipc_ep: failed to duplicate fd %d from pid %d",
+                      remote_fd, ep->remote_pid);
+            return UCS_ERR_IO_ERROR;
+        }
+        /* Update handle with local fd */
+        *(int*)local_handle.data = local_fd;
+        need_close_fd = 1;
+        ucs_debug("ze_ipc_ep: replaced remote fd %d with local fd %d",
+                  remote_fd, local_fd);
+    }
+
     /* Open IPC handle to get mapped address */
     ret = zeMemOpenIpcHandle(iface->ze_context, iface->ze_device,
-                             key->ipc_handle, 0, &mapped_addr);
+                             local_handle, 0, &mapped_addr);
     if (ret != ZE_RESULT_SUCCESS) {
         ucs_error("ze_ipc_ep: zeMemOpenIpcHandle failed with error 0x%x "
                   "(context=%p local_device=%p local_dev_id=%d remote_dev_id=%d)",
                   ret, (void*)iface->ze_context, (void*)iface->ze_device,
                   uct_ze_base_get_device_ordinal(iface->ze_device), key->dev_num);
+        if (need_close_fd) {
+            close(local_fd);
+        }
         return UCS_ERR_IO_ERROR;
     }
 
@@ -136,8 +217,14 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     if (event_desc == NULL) {
         ucs_error("failed to allocate event descriptor");
         zeMemCloseIpcHandle(iface->ze_context, mapped_addr);
+        if (need_close_fd) {
+            close(local_fd);
+        }
         return UCS_ERR_NO_MEMORY;
     }
+
+    /* Store duplicated fd for cleanup */
+    event_desc->dup_fd = need_close_fd ? local_fd : -1;
 
     /* Create event pool and event for tracking completion */
     event_pool_desc.stype = ZE_STRUCTURE_TYPE_EVENT_POOL_DESC;
@@ -148,6 +235,9 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
                             &iface->ze_device, &event_desc->event_pool);
     if (ret != ZE_RESULT_SUCCESS) {
         ucs_error("zeEventPoolCreate failed with error 0x%x", ret);
+        if (event_desc->dup_fd >= 0) {
+            close(event_desc->dup_fd);
+        }
         ucs_free(event_desc);
         zeMemCloseIpcHandle(iface->ze_context, mapped_addr);
         return UCS_ERR_IO_ERROR;
@@ -163,6 +253,9 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     if (ret != ZE_RESULT_SUCCESS) {
         ucs_error("zeEventCreate failed with error 0x%x", ret);
         zeEventPoolDestroy(event_desc->event_pool);
+        if (event_desc->dup_fd >= 0) {
+            close(event_desc->dup_fd);
+        }
         ucs_free(event_desc);
         zeMemCloseIpcHandle(iface->ze_context, mapped_addr);
         return UCS_ERR_IO_ERROR;
@@ -228,6 +321,9 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
 err_cleanup:
     zeEventDestroy(event_desc->event);
     zeEventPoolDestroy(event_desc->event_pool);
+    if (event_desc->dup_fd >= 0) {
+        close(event_desc->dup_fd);
+    }
     ucs_free(event_desc);
     zeMemCloseIpcHandle(iface->ze_context, mapped_addr);
     return UCS_ERR_IO_ERROR;

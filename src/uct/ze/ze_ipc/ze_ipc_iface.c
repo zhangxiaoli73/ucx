@@ -175,6 +175,11 @@ uct_ze_ipc_iface_progress(uct_iface_h tl_iface)
             zeMemCloseIpcHandle(iface->ze_context, event_desc->mapped_addr);
         }
 
+        /* Close duplicated fd if any */
+        if (event_desc->dup_fd >= 0) {
+            close(event_desc->dup_fd);
+        }
+
         /* Invoke completion callback */
         if (event_desc->comp != NULL) {
             uct_invoke_completion(event_desc->comp, UCS_OK);
