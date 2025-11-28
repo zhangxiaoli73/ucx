@@ -8,6 +8,7 @@
 
 #include <uct/base/uct_iface.h>
 #include <ucs/arch/cpu.h>
+#include <ucs/async/eventfd.h>
 #include <level_zero/ze_api.h>
 
 #include "ze_ipc_md.h"
@@ -35,6 +36,7 @@ typedef struct uct_ze_ipc_iface {
     uct_ze_ipc_iface_config_t    config;
     ucs_mpool_t                  event_pool;
     ucs_queue_head_t             outstanding;
+    int                          eventfd;   /* event fd for async notifications */
 } uct_ze_ipc_iface_t;
 
 
