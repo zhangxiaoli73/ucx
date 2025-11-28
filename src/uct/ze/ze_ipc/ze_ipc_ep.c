@@ -10,6 +10,7 @@
 #include "ze_ipc_ep.h"
 #include "ze_ipc_iface.h"
 #include "ze_ipc_md.h"
+#include <uct/ze/base/ze_base.h>
 
 #include <uct/base/uct_log.h>
 #include <uct/base/uct_iov.inl>
@@ -86,17 +87,41 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
         return UCS_OK;
     }
 
+    /* Print handle info for verification - should match PACK and UNPACK output */
+    {
+        const unsigned char *bytes = (const unsigned char *)&key->ipc_handle;
+        uint32_t sum = 0;
+        int local_dev_id = uct_ze_base_get_device_ordinal(iface->ze_device);
+        for (size_t i = 0; i < sizeof(ze_ipc_mem_handle_t); i++) {
+            sum += bytes[i];
+            sum = (sum << 1) | (sum >> 31);
+        }
+        ucs_info("OPEN(receiver): remote_dev=%d local_dev=%d checksum=0x%08x "
+                 "handle[0-15]=%02x%02x%02x%02x%02x%02x%02x%02x"
+                 "%02x%02x%02x%02x%02x%02x%02x%02x",
+                 key->dev_num, local_dev_id, sum,
+                 bytes[0], bytes[1], bytes[2], bytes[3],
+                 bytes[4], bytes[5], bytes[6], bytes[7],
+                 bytes[8], bytes[9], bytes[10], bytes[11],
+                 bytes[12], bytes[13], bytes[14], bytes[15]);
+    }
+
     ucs_info("ze_ipc_ep: post_copy direction=%s remote_addr=0x%lx length=%zu "
-             "key->address=0x%lx key->length=%zu",
+             "local_device=%p (id=%d) context=%p",
              (direction == UCT_ZE_IPC_PUT) ? "PUT" : "GET",
              (unsigned long)remote_addr, iov[0].length,
-             (unsigned long)key->address, key->length);
+             (void*)iface->ze_device,
+             uct_ze_base_get_device_ordinal(iface->ze_device),
+             (void*)iface->ze_context);
 
     /* Open IPC handle to get mapped address */
     ret = zeMemOpenIpcHandle(iface->ze_context, iface->ze_device,
                              key->ipc_handle, 0, &mapped_addr);
     if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("ze_ipc_ep: zeMemOpenIpcHandle failed with error 0x%x", ret);
+        ucs_error("ze_ipc_ep: zeMemOpenIpcHandle failed with error 0x%x "
+                  "(context=%p local_device=%p local_dev_id=%d remote_dev_id=%d)",
+                  ret, (void*)iface->ze_context, (void*)iface->ze_device,
+                  uct_ze_base_get_device_ordinal(iface->ze_device), key->dev_num);
         return UCS_ERR_IO_ERROR;
     }
 

@@ -43,6 +43,10 @@ ze_driver_handle_t uct_ze_base_get_driver(void);
 ze_device_handle_t uct_ze_base_get_device(int dev_num);
 
 
+/* Get device ordinal from device handle, returns -1 if not found */
+int uct_ze_base_get_device_ordinal(ze_device_handle_t device);
+
+
 int uct_ze_base_get_num_devices(void);
 
 
