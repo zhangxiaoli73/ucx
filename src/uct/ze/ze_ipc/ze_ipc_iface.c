@@ -348,6 +348,53 @@ static uct_iface_internal_ops_t uct_ze_ipc_iface_internal_ops = {
 };
 
 
+/* Find the copy engine queue group ordinal for a device */
+static ucs_status_t
+uct_ze_ipc_find_copy_ordinal(ze_device_handle_t device, uint32_t *ordinal_p)
+{
+    ze_command_queue_group_properties_t queue_props[16];
+    uint32_t num_queue_groups = 16;
+    uint32_t i;
+    ze_result_t ret;
+
+    /* Initialize structure types */
+    for (i = 0; i < 16; i++) {
+        queue_props[i].stype = ZE_STRUCTURE_TYPE_COMMAND_QUEUE_GROUP_PROPERTIES;
+        queue_props[i].pNext = NULL;
+    }
+
+    /* Get queue group properties */
+    ret = zeDeviceGetCommandQueueGroupProperties(device, &num_queue_groups,
+                                                  queue_props);
+    if (ret != ZE_RESULT_SUCCESS) {
+        ucs_error("ze_ipc_iface: zeDeviceGetCommandQueueGroupProperties failed: 0x%x",
+                  ret);
+        return UCS_ERR_IO_ERROR;
+    }
+
+    /* First pass: find dedicated copy engine (COPY flag but NOT COMPUTE) */
+    for (i = 0; i < num_queue_groups; i++) {
+        if ((queue_props[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COPY) &&
+            !(queue_props[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE)) {
+            *ordinal_p = i;
+            ucs_debug("ze_ipc_iface: using dedicated copy engine queue group %u", i);
+            return UCS_OK;
+        }
+    }
+
+    /* Second pass: find any queue group that supports COPY */
+    for (i = 0; i < num_queue_groups; i++) {
+        if (queue_props[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COPY) {
+            *ordinal_p = i;
+            ucs_debug("ze_ipc_iface: using copy-capable queue group %u", i);
+            return UCS_OK;
+        }
+    }
+
+    ucs_error("ze_ipc_iface: no copy-capable queue group found");
+    return UCS_ERR_NO_DEVICE;
+}
+
 static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
                            const uct_iface_params_t *params,
                            const uct_iface_config_t *tl_config)
@@ -356,6 +403,8 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
     uct_ze_ipc_md_t *ze_md;
     ze_command_queue_desc_t queue_desc = {};
     ze_command_list_desc_t list_desc = {};
+    uint32_t copy_ordinal = 0;
+    ucs_status_t status;
     ze_result_t ret;
 
     config = ucs_derived_of(tl_config, uct_ze_ipc_iface_config_t);
@@ -374,8 +423,14 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
     self->config         = *config;
     self->eventfd        = UCS_ASYNC_EVENTFD_INVALID_FD;
 
-    /* Create command queue */
-    queue_desc.ordinal = 0;
+    /* Find copy engine queue group ordinal */
+    status = uct_ze_ipc_find_copy_ordinal(self->ze_device, &copy_ordinal);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    /* Create command queue using copy engine */
+    queue_desc.ordinal = copy_ordinal;
     queue_desc.mode    = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
     ret = zeCommandQueueCreate(self->ze_context, self->ze_device, &queue_desc,
                                &self->cmd_queue);
@@ -384,7 +439,8 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
         return UCS_ERR_IO_ERROR;
     }
 
-    /* Create command list */
+    /* Create command list using copy engine */
+    list_desc.commandQueueGroupOrdinal = copy_ordinal;
     ret = zeCommandListCreate(self->ze_context, self->ze_device, &list_desc,
                               &self->cmd_list);
     if (ret != ZE_RESULT_SUCCESS) {
@@ -395,8 +451,9 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
 
     ucs_queue_head_init(&self->outstanding);
 
-    ucs_info("ze_ipc_iface: initialized iface for device %p context %p (pid=%d)",
-             self->ze_device, self->ze_context, getpid());
+    ucs_info("ze_ipc_iface: initialized iface for device %p context %p "
+             "(pid=%d, copy_ordinal=%u)",
+             self->ze_device, self->ze_context, getpid(), copy_ordinal);
 
     return UCS_OK;
 }
