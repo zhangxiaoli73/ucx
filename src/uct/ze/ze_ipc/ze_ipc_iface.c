@@ -402,7 +402,6 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
     uct_ze_ipc_iface_config_t *config;
     uct_ze_ipc_md_t *ze_md;
     ze_command_queue_desc_t queue_desc = {};
-    ze_command_list_desc_t list_desc = {};
     uint32_t copy_ordinal = 0;
     ucs_status_t status;
     ze_result_t ret;
@@ -429,25 +428,23 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
         return status;
     }
 
-    /* Create command queue using copy engine */
+    /* Create immediate command list using copy engine for async operations */
+    queue_desc.stype   = ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC;
     queue_desc.ordinal = copy_ordinal;
     queue_desc.mode    = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
-    ret = zeCommandQueueCreate(self->ze_context, self->ze_device, &queue_desc,
-                               &self->cmd_queue);
+    queue_desc.index   = 0;
+    queue_desc.flags   = 0;
+    queue_desc.priority = ZE_COMMAND_QUEUE_PRIORITY_NORMAL;
+
+    ret = zeCommandListCreateImmediate(self->ze_context, self->ze_device,
+                                       &queue_desc, &self->cmd_list);
     if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("ze_ipc_iface: zeCommandQueueCreate failed with error 0x%x", ret);
+        ucs_error("ze_ipc_iface: zeCommandListCreateImmediate failed with error 0x%x", ret);
         return UCS_ERR_IO_ERROR;
     }
 
-    /* Create command list using copy engine */
-    list_desc.commandQueueGroupOrdinal = copy_ordinal;
-    ret = zeCommandListCreate(self->ze_context, self->ze_device, &list_desc,
-                              &self->cmd_list);
-    if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("ze_ipc_iface: zeCommandListCreate failed with error 0x%x", ret);
-        zeCommandQueueDestroy(self->cmd_queue);
-        return UCS_ERR_IO_ERROR;
-    }
+    /* For immediate command lists, cmd_queue is not used */
+    self->cmd_queue = NULL;
 
     ucs_queue_head_init(&self->outstanding);
 
@@ -483,12 +480,11 @@ static UCS_CLASS_CLEANUP_FUNC(uct_ze_ipc_iface_t)
         ucs_free(event_desc);
     }
 
+    /* Destroy immediate command list */
     if (self->cmd_list != NULL) {
         zeCommandListDestroy(self->cmd_list);
     }
-    if (self->cmd_queue != NULL) {
-        zeCommandQueueDestroy(self->cmd_queue);
-    }
+    /* cmd_queue is not used with immediate command lists */
 
     /* Close eventfd if created */
     if (self->eventfd != UCS_ASYNC_EVENTFD_INVALID_FD) {

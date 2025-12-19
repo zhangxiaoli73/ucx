@@ -277,7 +277,11 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     }
     
     clock_gettime(CLOCK_MONOTONIC, &start2);
-    /* Append memory copy to command list */
+    /*
+     * Append memory copy to immediate command list with event signaling.
+     * Immediate command lists execute asynchronously without needing
+     * explicit close/execute/reset calls.
+     */
     ret = zeCommandListAppendMemoryCopy(iface->cmd_list, dst, src,
                                         iov[0].length, event_desc->event,
                                         0, NULL);
@@ -286,42 +290,11 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
         goto err_cleanup;
     }
 
-    /* Close and execute command list */
-    ret = zeCommandListClose(iface->cmd_list);
-    if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("zeCommandListClose failed with error 0x%x", ret);
-        goto err_cleanup;
-    }
-
-    ret = zeCommandQueueExecuteCommandLists(iface->cmd_queue, 1,
-                                            &iface->cmd_list, NULL);
-    if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("zeCommandQueueExecuteCommandLists failed with error 0x%x", ret);
-        goto err_cleanup;
-    }
-
-    /* Synchronize to ensure command list execution is complete before reset */
-    ret = zeCommandQueueSynchronize(iface->cmd_queue, UINT64_MAX);
-    if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("zeCommandQueueSynchronize failed with error 0x%x", ret);
-        goto err_cleanup;
-    }
-
-    /* Reset command list for next use */
-    ret = zeCommandListReset(iface->cmd_list);
-    if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("zeCommandListReset failed with error 0x%x", ret);
-        goto err_cleanup;
-    }
-
     /* Store event info for progress tracking */
     event_desc->mapped_addr = mapped_addr;
     event_desc->comp        = comp;
 
     ucs_queue_push(&iface->outstanding, &event_desc->queue);
-
-    ucs_trace("zeCommandListAppendMemoryCopy issued: dst=%p src=%p len=%zu",
-              dst, src, iov[0].length);
 
     clock_gettime(CLOCK_MONOTONIC, &end);
 
@@ -334,6 +307,8 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     elapsed_ms3 = (end.tv_sec - start1.tv_sec) * 1000.0 +
     (end.tv_nsec - start1.tv_nsec) / 1000000.0;
 
+    ucs_trace("zeCommandListAppendMemoryCopy issued (async): dst=%p src=%p len=%zu",
+              dst, src, iov[0].length);
     ucs_info("Time cost: %.3f ms, time copy is %.3f, total_time is %.3f, total transfer size is %zu\n", elapsed_ms1,  elapsed_ms2, elapsed_ms3, iov[0].length);
 
     return UCS_INPROGRESS;
