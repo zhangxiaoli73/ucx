@@ -10,6 +10,7 @@
 #include "ze_ipc_ep.h"
 #include "ze_ipc_iface.h"
 #include "ze_ipc_md.h"
+#include "ze_ipc_cache.h"
 #include <uct/ze/base/ze_base.h>
 
 #include <uct/base/uct_log.h>
@@ -129,14 +130,13 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     uct_ze_ipc_event_desc_t *event_desc;
     ze_event_pool_desc_t event_pool_desc = {};
     ze_event_desc_t event_desc_ze = {};
-    ze_ipc_mem_handle_t local_handle;
     void *mapped_addr = NULL;
     void *mapped_rem_addr;
     void *dst, *src;
     size_t offset;
     ze_result_t ret;
-    int remote_fd, local_fd;
-    int need_close_fd = 0;
+    ucs_status_t status;
+    int local_fd;
     struct timespec start1, start2, end;
     double elapsed_ms1, elapsed_ms2, elapsed_ms3;
     clock_gettime(CLOCK_MONOTONIC, &start1);
@@ -174,45 +174,14 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
              uct_ze_base_get_device_ordinal(iface->ze_device),
              (void*)iface->ze_context);
 
-    /*
-     * Level Zero IPC handles contain a file descriptor in the first 4 bytes.
-     * When IPC handle is transferred between processes (via UCX rkey mechanism),
-     * the fd is not valid in the receiving process. We need to duplicate the fd
-     * from the sender's process using pidfd_getfd().
-     */
-    memcpy(&local_handle, &key->ipc_handle, sizeof(local_handle));
-    remote_fd = *(int*)local_handle.data;
-
-    if (ep->remote_pid != getpid() && remote_fd > 0 && remote_fd < 65536) {
-        /* Cross-process case: need to duplicate fd */
-        local_fd = uct_ze_ipc_dup_fd_from_pid(ep->remote_pid, remote_fd);
-        if (local_fd < 0) {
-            ucs_error("ze_ipc_ep: failed to duplicate fd %d from pid %d",
-                      remote_fd, ep->remote_pid);
-            return UCS_ERR_IO_ERROR;
-        }
-        /* Update handle with local fd */
-        *(int*)local_handle.data = local_fd;
-        need_close_fd = 1;
-        ucs_debug("ze_ipc_ep: replaced remote fd %d with local fd %d",
-                  remote_fd, local_fd);
+    /* Use cache to map IPC handle */
+    status = uct_ze_ipc_map_memhandle(key, iface->ze_context, &mapped_addr, &local_fd);
+    if (status != UCS_OK) {
+        ucs_error("ze_ipc_ep: uct_ze_ipc_map_memhandle failed");
+        return status;
     }
 
-    /* Open IPC handle to get mapped address */
-    ret = zeMemOpenIpcHandle(iface->ze_context, iface->ze_device,
-                             local_handle, 0, &mapped_addr);
-    if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("ze_ipc_ep: zeMemOpenIpcHandle failed with error 0x%x "
-                  "(context=%p local_device=%p local_dev_id=%d remote_dev_id=%d)",
-                  ret, (void*)iface->ze_context, (void*)iface->ze_device,
-                  uct_ze_base_get_device_ordinal(iface->ze_device), key->dev_num);
-        if (need_close_fd) {
-            close(local_fd);
-        }
-        return UCS_ERR_IO_ERROR;
-    }
-
-    ucs_debug("ze_ipc_ep: zeMemOpenIpcHandle succeeded, mapped_addr=%p", mapped_addr);
+    ucs_debug("ze_ipc_ep: IPC handle mapped (cached), mapped_addr=%p", mapped_addr);
 
     /* Calculate offset within the allocation */
     offset          = remote_addr - key->address;
@@ -222,15 +191,16 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     event_desc = ucs_malloc(sizeof(*event_desc), "uct_ze_ipc_event_desc_t");
     if (event_desc == NULL) {
         ucs_error("failed to allocate event descriptor");
-        zeMemCloseIpcHandle(iface->ze_context, mapped_addr);
-        if (need_close_fd) {
-            close(local_fd);
-        }
+        uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->d_bptr, mapped_addr,
+                                   iface->ze_context, local_fd,
+                                   iface->config.enable_cache);
         return UCS_ERR_NO_MEMORY;
     }
 
-    /* Store duplicated fd for cleanup */
-    event_desc->dup_fd = need_close_fd ? local_fd : -1;
+    /* Store information for cache-based cleanup */
+    event_desc->dup_fd = local_fd;
+    event_desc->pid    = ep->remote_pid;
+    event_desc->d_bptr = key->d_bptr;
 
     /* Create event pool and event for tracking completion */
     event_pool_desc.stype = ZE_STRUCTURE_TYPE_EVENT_POOL_DESC;
@@ -241,11 +211,10 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
                             &iface->ze_device, &event_desc->event_pool);
     if (ret != ZE_RESULT_SUCCESS) {
         ucs_error("zeEventPoolCreate failed with error 0x%x", ret);
-        if (event_desc->dup_fd >= 0) {
-            close(event_desc->dup_fd);
-        }
         ucs_free(event_desc);
-        zeMemCloseIpcHandle(iface->ze_context, mapped_addr);
+        uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->d_bptr, mapped_addr,
+                                   iface->ze_context, local_fd,
+                                   iface->config.enable_cache);
         return UCS_ERR_IO_ERROR;
     }
 
@@ -259,11 +228,10 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     if (ret != ZE_RESULT_SUCCESS) {
         ucs_error("zeEventCreate failed with error 0x%x", ret);
         zeEventPoolDestroy(event_desc->event_pool);
-        if (event_desc->dup_fd >= 0) {
-            close(event_desc->dup_fd);
-        }
         ucs_free(event_desc);
-        zeMemCloseIpcHandle(iface->ze_context, mapped_addr);
+        uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->d_bptr, mapped_addr,
+                                   iface->ze_context, local_fd,
+                                   iface->config.enable_cache);
         return UCS_ERR_IO_ERROR;
     }
 
@@ -316,11 +284,10 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
 err_cleanup:
     zeEventDestroy(event_desc->event);
     zeEventPoolDestroy(event_desc->event_pool);
-    if (event_desc->dup_fd >= 0) {
-        close(event_desc->dup_fd);
-    }
     ucs_free(event_desc);
-    zeMemCloseIpcHandle(iface->ze_context, mapped_addr);
+    uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->d_bptr, mapped_addr,
+                               iface->ze_context, local_fd,
+                               iface->config.enable_cache);
     return UCS_ERR_IO_ERROR;
 }
 

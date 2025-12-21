@@ -9,6 +9,7 @@
 
 #include "ze_ipc_iface.h"
 #include "ze_ipc_ep.h"
+#include "ze_ipc_cache.h"
 
 #include <uct/ze/base/ze_base.h>
 #include <ucs/type/class.h>
@@ -29,6 +30,11 @@ static ucs_config_field_t uct_ze_ipc_iface_config_table[] = {
      "Max number of event completions to pick during ze events polling",
      ucs_offsetof(uct_ze_ipc_iface_config_t, max_poll),
      UCS_CONFIG_TYPE_UINT},
+
+    {"ENABLE_CACHE", "yes",
+     "Enable IPC handle caching to improve performance",
+     ucs_offsetof(uct_ze_ipc_iface_config_t, enable_cache),
+     UCS_CONFIG_TYPE_BOOL},
 
     {"BW", "50000MBs",
      "Effective p2p memory bandwidth",
@@ -225,14 +231,19 @@ uct_ze_ipc_iface_progress(uct_iface_h tl_iface)
 
         ucs_queue_del_iter(&iface->outstanding, iter);
 
-        /* Close IPC handle if mapped */
+        /* Unmap IPC handle using cache */
         if (event_desc->mapped_addr != NULL) {
-            zeMemCloseIpcHandle(iface->ze_context, event_desc->mapped_addr);
-        }
-
-        /* Close duplicated fd if any */
-        if (event_desc->dup_fd >= 0) {
-            close(event_desc->dup_fd);
+            ucs_status_t status;
+            status = uct_ze_ipc_unmap_memhandle(event_desc->pid,
+                                                event_desc->d_bptr,
+                                                event_desc->mapped_addr,
+                                                iface->ze_context,
+                                                event_desc->dup_fd,
+                                                iface->config.enable_cache);
+            if (status != UCS_OK) {
+                ucs_warn("failed to unmap IPC handle addr:%p",
+                         event_desc->mapped_addr);
+            }
         }
 
         /* Invoke completion callback */

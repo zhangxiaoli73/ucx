@@ -21,6 +21,7 @@
 typedef struct uct_ze_ipc_iface_config {
     uct_iface_config_t super;
     unsigned           max_poll;         /* query attempts w.o success */
+    int                enable_cache;     /* enable/disable ipc handle cache */
     double             bandwidth;        /* estimated bandwidth */
     double             latency;          /* estimated latency */
     double             overhead;         /* estimated CPU overhead */
@@ -47,6 +48,8 @@ typedef struct uct_ze_ipc_event_desc {
     uct_completion_t   *comp;
     ucs_queue_elem_t    queue;
     int                 dup_fd;     /* duplicated fd to close, or -1 if none */
+    pid_t               pid;        /* remote process id for cache lookup */
+    uintptr_t           d_bptr;     /* remote base pointer for cache lookup */
 } uct_ze_ipc_event_desc_t;
 
 
