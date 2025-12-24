@@ -37,6 +37,7 @@ typedef struct uct_ze_ipc_md_config {
  */
 typedef struct uct_ze_ipc_key {
     ze_ipc_mem_handle_t ipc_handle; /**< IPC memory handle */
+    pid_t               pid;        /**< Remote process ID (for cache) */
     uintptr_t           address;    /**< Base address of the allocation */
     size_t              length;     /**< Size of the allocation */
     int                 dev_num;    /**< GPU device number */

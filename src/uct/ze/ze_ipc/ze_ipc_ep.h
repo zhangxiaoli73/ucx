@@ -35,4 +35,13 @@ ucs_status_t uct_ze_ipc_ep_put_zcopy(uct_ep_h tl_ep,
 int uct_ze_ipc_ep_is_connected(const uct_ep_h tl_ep,
                                const uct_ep_is_connected_params_t *params);
 
+/**
+ * Duplicate a file descriptor from a remote process
+ *
+ * @param remote_pid  Process ID of the remote process
+ * @param remote_fd   File descriptor in the remote process
+ * @return Local file descriptor on success, -1 on error
+ */
+int uct_ze_ipc_dup_fd_from_pid(pid_t remote_pid, int remote_fd);
+
 #endif

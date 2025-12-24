@@ -31,6 +31,11 @@ static ucs_config_field_t uct_ze_ipc_iface_config_table[] = {
      ucs_offsetof(uct_ze_ipc_iface_config_t, max_poll),
      UCS_CONFIG_TYPE_UINT},
 
+    {"MAX_CMD_LISTS", UCS_PP_MAKE_STRING(UCT_ZE_IPC_MAX_PEERS),
+     "Max number of command lists to make concurrent progress on",
+     ucs_offsetof(uct_ze_ipc_iface_config_t, max_cmd_lists),
+     UCS_CONFIG_TYPE_UINT},
+
     {"ENABLE_CACHE", "yes",
      "Enable IPC handle caching to improve performance",
      ucs_offsetof(uct_ze_ipc_iface_config_t, enable_cache),
@@ -219,46 +224,65 @@ uct_ze_ipc_iface_progress(uct_iface_h tl_iface)
 {
     uct_ze_ipc_iface_t *iface = ucs_derived_of(tl_iface, uct_ze_ipc_iface_t);
     uct_ze_ipc_event_desc_t *event_desc;
+    uct_ze_ipc_queue_desc_t *q_desc;
     ucs_queue_iter_t iter;
     unsigned count = 0;
+    unsigned max_poll = iface->config.max_poll;
     ze_result_t ret;
 
-    ucs_queue_for_each_safe(event_desc, iter, &iface->outstanding, queue) {
-        ret = zeEventQueryStatus(event_desc->event);
-        if (ret == ZE_RESULT_NOT_READY) {
-            continue;
-        }
-
-        ucs_queue_del_iter(&iface->outstanding, iter);
-
-        /* Unmap IPC handle using cache */
-        if (event_desc->mapped_addr != NULL) {
-            ucs_status_t status;
-            status = uct_ze_ipc_unmap_memhandle(event_desc->pid,
-                                                event_desc->d_bptr,
-                                                event_desc->mapped_addr,
-                                                iface->ze_context,
-                                                event_desc->dup_fd,
-                                                iface->config.enable_cache);
-            if (status != UCS_OK) {
-                ucs_warn("failed to unmap IPC handle addr:%p",
-                         event_desc->mapped_addr);
+    /*
+     * Progress all active command list queues
+     * Similar to CUDA IPC's uct_cuda_base_progress_event_queue
+     */
+    ucs_queue_for_each_extract(q_desc, &iface->active_queue, queue, 1) {
+        ucs_queue_for_each_safe(event_desc, iter, &q_desc->event_queue, queue) {
+            /* Check if we've reached max_poll limit */
+            if (count >= max_poll) {
+                goto out;
             }
+
+            ret = zeEventQueryStatus(event_desc->event);
+            if (ret == ZE_RESULT_NOT_READY) {
+                continue;
+            }
+
+            ucs_queue_del_iter(&q_desc->event_queue, iter);
+
+            /* Unmap IPC handle using cache */
+            if (event_desc->mapped_addr != NULL) {
+                ucs_status_t status;
+                status = uct_ze_ipc_unmap_memhandle(event_desc->pid,
+                                                    event_desc->address,
+                                                    event_desc->mapped_addr,
+                                                    iface->ze_context,
+                                                    event_desc->dup_fd,
+                                                    iface->config.enable_cache);
+                if (status != UCS_OK) {
+                    ucs_warn("failed to unmap IPC handle addr:%p",
+                             event_desc->mapped_addr);
+                }
+            }
+
+            /* Invoke completion callback */
+            if (event_desc->comp != NULL) {
+                uct_invoke_completion(event_desc->comp, UCS_OK);
+            }
+
+            /* Destroy event and pool */
+            zeEventDestroy(event_desc->event);
+            zeEventPoolDestroy(event_desc->event_pool);
+            ucs_free(event_desc);
+
+            count++;
         }
 
-        /* Invoke completion callback */
-        if (event_desc->comp != NULL) {
-            uct_invoke_completion(event_desc->comp, UCS_OK);
+        /* If queue still has events, put it back to active queue */
+        if (!ucs_queue_is_empty(&q_desc->event_queue)) {
+            ucs_queue_push(&iface->active_queue, &q_desc->queue);
         }
-
-        /* Destroy event and pool */
-        zeEventDestroy(event_desc->event);
-        zeEventPoolDestroy(event_desc->event_pool);
-        ucs_free(event_desc);
-
-        count++;
     }
 
+out:
     return count;
 }
 
@@ -268,14 +292,18 @@ uct_ze_ipc_iface_flush(uct_iface_h tl_iface, unsigned flags,
                        uct_completion_t *comp)
 {
     uct_ze_ipc_iface_t *iface = ucs_derived_of(tl_iface, uct_ze_ipc_iface_t);
+    unsigned i;
 
-    if (ucs_queue_is_empty(&iface->outstanding)) {
-        UCT_TL_IFACE_STAT_FLUSH(ucs_derived_of(tl_iface, uct_base_iface_t));
-        return UCS_OK;
+    /* Check if all command list queues are empty */
+    for (i = 0; i < iface->num_cmd_lists; i++) {
+        if (!ucs_queue_is_empty(&iface->queue_desc[i].event_queue)) {
+            UCT_TL_IFACE_STAT_FLUSH_WAIT(ucs_derived_of(tl_iface, uct_base_iface_t));
+            return UCS_INPROGRESS;
+        }
     }
 
-    UCT_TL_IFACE_STAT_FLUSH_WAIT(ucs_derived_of(tl_iface, uct_base_iface_t));
-    return UCS_INPROGRESS;
+    UCT_TL_IFACE_STAT_FLUSH(ucs_derived_of(tl_iface, uct_base_iface_t));
+    return UCS_OK;
 }
 
 
@@ -361,7 +389,8 @@ static uct_iface_internal_ops_t uct_ze_ipc_iface_internal_ops = {
 
 /* Find the copy engine queue group ordinal for a device */
 static ucs_status_t
-uct_ze_ipc_find_copy_ordinal(ze_device_handle_t device, uint32_t *ordinal_p)
+uct_ze_ipc_find_copy_ordinal(ze_device_handle_t device, uint32_t *ordinal_p,
+                              uint32_t *num_queues_p)
 {
     ze_command_queue_group_properties_t queue_props[16];
     uint32_t num_queue_groups = 16;
@@ -388,7 +417,9 @@ uct_ze_ipc_find_copy_ordinal(ze_device_handle_t device, uint32_t *ordinal_p)
         if ((queue_props[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COPY) &&
             !(queue_props[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE)) {
             *ordinal_p = i;
-            ucs_debug("ze_ipc_iface: using dedicated copy engine queue group %u", i);
+            *num_queues_p = queue_props[i].numQueues;
+            ucs_debug("ze_ipc_iface: using dedicated copy engine queue group %u (numQueues=%u)",
+                      i, queue_props[i].numQueues);
             return UCS_OK;
         }
     }
@@ -397,7 +428,9 @@ uct_ze_ipc_find_copy_ordinal(ze_device_handle_t device, uint32_t *ordinal_p)
     for (i = 0; i < num_queue_groups; i++) {
         if (queue_props[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COPY) {
             *ordinal_p = i;
-            ucs_debug("ze_ipc_iface: using copy-capable queue group %u", i);
+            *num_queues_p = queue_props[i].numQueues;
+            ucs_debug("ze_ipc_iface: using copy-capable queue group %u (numQueues=%u)",
+                      i, queue_props[i].numQueues);
             return UCS_OK;
         }
     }
@@ -414,8 +447,10 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
     uct_ze_ipc_md_t *ze_md;
     ze_command_queue_desc_t queue_desc = {};
     uint32_t copy_ordinal = 0;
+    uint32_t num_queues = 0;
     ucs_status_t status;
     ze_result_t ret;
+    unsigned i;
 
     config = ucs_derived_of(tl_config, uct_ze_ipc_iface_config_t);
     ze_md  = ucs_derived_of(md, uct_ze_ipc_md_t);
@@ -429,39 +464,94 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
     self->ze_context     = ze_md->ze_context;
     self->ze_device      = ze_md->ze_device;
     self->cmd_queue      = NULL;
-    self->cmd_list       = NULL;
+    self->cmd_list       = NULL;  /* deprecated, kept for compatibility */
     self->config         = *config;
     self->eventfd        = UCS_ASYNC_EVENTFD_INVALID_FD;
+    self->next_cmd_list  = 0;
 
-    /* Find copy engine queue group ordinal */
-    status = uct_ze_ipc_find_copy_ordinal(self->ze_device, &copy_ordinal);
+    /* Find copy engine queue group ordinal and available queue count */
+    status = uct_ze_ipc_find_copy_ordinal(self->ze_device, &copy_ordinal, &num_queues);
     if (status != UCS_OK) {
         return status;
     }
 
-    /* Create immediate command list using copy engine for async operations */
-    queue_desc.stype   = ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC;
-    queue_desc.ordinal = copy_ordinal;
-    queue_desc.mode    = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
-    queue_desc.index   = 0;
-    queue_desc.flags   = 0;
-    queue_desc.priority = ZE_COMMAND_QUEUE_PRIORITY_NORMAL;
-
-    ret = zeCommandListCreateImmediate(self->ze_context, self->ze_device,
-                                       &queue_desc, &self->cmd_list);
-    if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("ze_ipc_iface: zeCommandListCreateImmediate failed with error 0x%x", ret);
-        return UCS_ERR_IO_ERROR;
+    /* Validate and adjust max_cmd_lists based on hardware capabilities */
+    if (config->max_cmd_lists > UCT_ZE_IPC_MAX_PEERS) {
+        ucs_error("ze_ipc_iface: invalid max_cmd_lists value (%u > %u)",
+                  config->max_cmd_lists, UCT_ZE_IPC_MAX_PEERS);
+        return UCS_ERR_INVALID_PARAM;
     }
 
-    /* For immediate command lists, cmd_queue is not used */
-    self->cmd_queue = NULL;
+    /*
+     * Create multiple immediate command lists for parallel execution.
+     *
+     * Key insight from Level Zero specification:
+     * - For immediate command lists, queue_desc.index MUST be 0
+     * - Multiple immediate command lists can be created with the same index=0
+     * - The driver automatically manages parallel execution across hardware queues
+     * - Each immediate command list is independent and can execute concurrently
+     *
+     * This is different from regular command queues where different index values
+     * (0, 1, 2...) can be used to explicitly select different hardware queues.
+     */
+    self->num_cmd_lists = config->max_cmd_lists;
+    ucs_info("ze_ipc_iface: creating %u immediate command list(s) on queue group %u "
+             "(numQueues=%u, driver manages parallel execution)",
+             self->num_cmd_lists, copy_ordinal, num_queues);
 
-    ucs_queue_head_init(&self->outstanding);
+    /* Initialize active queue for command lists with pending operations */
+    ucs_queue_head_init(&self->active_queue);
+    ucs_queue_head_init(&self->outstanding);  /* deprecated, kept for compatibility */
+
+    /*
+     * Create multiple immediate command lists for parallel progress.
+     *
+     * According to Level Zero spec, for immediate command lists:
+     * - queue_desc.index MUST be 0 (not 1, 2, 3...)
+     * - Multiple immediate command lists with index=0 are allowed
+     * - Driver manages parallel execution automatically
+     *
+     * Benefits of multiple immediate command lists:
+     * - Round-robin distribution of IPC copy operations
+     * - Reduced contention on single command list
+     * - Better hardware utilization for concurrent operations
+     * - Independent event queues for each command list
+     */
+    queue_desc.stype    = ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC;
+    queue_desc.ordinal  = copy_ordinal;
+    queue_desc.mode     = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
+    queue_desc.index    = 0;  /* MUST be 0 for immediate command lists */
+    queue_desc.flags    = 0;
+    queue_desc.priority = ZE_COMMAND_QUEUE_PRIORITY_NORMAL;
+
+    for (i = 0; i < self->num_cmd_lists; i++) {
+        ret = zeCommandListCreateImmediate(self->ze_context, self->ze_device,
+                                           &queue_desc, &self->queue_desc[i].cmd_list);
+        if (ret != ZE_RESULT_SUCCESS) {
+            unsigned j;
+            ucs_error("ze_ipc_iface: zeCommandListCreateImmediate[%u] failed with error 0x%x",
+                      i, ret);
+            /* Clean up previously created command lists */
+            for (j = 0; j < i; j++) {
+                zeCommandListDestroy(self->queue_desc[j].cmd_list);
+            }
+            return UCS_ERR_IO_ERROR;
+        }
+
+        /* Initialize event queue for this command list */
+        ucs_queue_head_init(&self->queue_desc[i].event_queue);
+
+        ucs_debug("ze_ipc_iface: created immediate command list %u/%u: %p",
+                  i + 1, self->num_cmd_lists, self->queue_desc[i].cmd_list);
+    }
+
+    /* For backward compatibility, set first command list as default */
+    self->cmd_list = self->queue_desc[0].cmd_list;
 
     ucs_info("ze_ipc_iface: initialized iface for device %p context %p "
-             "(pid=%d, copy_ordinal=%u)",
-             self->ze_device, self->ze_context, getpid(), copy_ordinal);
+             "(pid=%d, copy_ordinal=%u, num_cmd_lists=%u)",
+             self->ze_device, self->ze_context, getpid(), copy_ordinal,
+             self->num_cmd_lists);
 
     return UCS_OK;
 }
@@ -470,8 +560,31 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
 static UCS_CLASS_CLEANUP_FUNC(uct_ze_ipc_iface_t)
 {
     uct_ze_ipc_event_desc_t *event_desc;
+    unsigned i;
 
-    /* Clean up outstanding events */
+    /* Clean up outstanding events from all command list queues */
+    for (i = 0; i < self->num_cmd_lists; i++) {
+        while (!ucs_queue_is_empty(&self->queue_desc[i].event_queue)) {
+            event_desc = ucs_queue_pull_elem_non_empty(&self->queue_desc[i].event_queue,
+                                                       uct_ze_ipc_event_desc_t,
+                                                       queue);
+            if (event_desc->mapped_addr != NULL) {
+                zeMemCloseIpcHandle(self->ze_context, event_desc->mapped_addr);
+            }
+            if (event_desc->dup_fd >= 0) {
+                close(event_desc->dup_fd);
+            }
+            if (event_desc->event != NULL) {
+                zeEventDestroy(event_desc->event);
+            }
+            if (event_desc->event_pool != NULL) {
+                zeEventPoolDestroy(event_desc->event_pool);
+            }
+            ucs_free(event_desc);
+        }
+    }
+
+    /* Clean up deprecated outstanding queue for backward compatibility */
     while (!ucs_queue_is_empty(&self->outstanding)) {
         event_desc = ucs_queue_pull_elem_non_empty(&self->outstanding,
                                                    uct_ze_ipc_event_desc_t,
@@ -491,9 +604,11 @@ static UCS_CLASS_CLEANUP_FUNC(uct_ze_ipc_iface_t)
         ucs_free(event_desc);
     }
 
-    /* Destroy immediate command list */
-    if (self->cmd_list != NULL) {
-        zeCommandListDestroy(self->cmd_list);
+    /* Destroy all command lists */
+    for (i = 0; i < self->num_cmd_lists; i++) {
+        if (self->queue_desc[i].cmd_list != NULL) {
+            zeCommandListDestroy(self->queue_desc[i].cmd_list);
+        }
     }
     /* cmd_queue is not used with immediate command lists */
 

@@ -144,12 +144,13 @@ uct_ze_ipc_pack_key(uct_ze_ipc_md_t *md, void *address, size_t length,
         return status;
     }
 
+    key->pid     = getpid();
     key->address = (uintptr_t)base_address;
     key->length  = alloc_size;
     key->dev_num = dev_ordinal;
 
-    ucs_trace("packed IPC handle for %p base=%p len=%zu dev=%d", address,
-              base_address, alloc_size, dev_ordinal);
+    ucs_trace("packed IPC handle for %p base=%p len=%zu dev=%d pid=%d", address,
+              base_address, alloc_size, dev_ordinal, key->pid);
 
     return UCS_OK;
 }
