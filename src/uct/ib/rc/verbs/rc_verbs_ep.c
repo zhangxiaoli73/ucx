@@ -242,12 +242,15 @@ ucs_status_t uct_rc_verbs_ep_get_bcopy(uct_ep_h tl_ep,
 ucs_status_t uct_rc_verbs_ep_get_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov,
                                        size_t iovcnt, uint64_t remote_addr,
                                        uct_rkey_t rkey, uct_completion_t *comp)
-{
+{   
+    struct timespec start1, start2;
+    double elapsed_ms1;
     uct_rc_verbs_iface_t  *iface = ucs_derived_of(tl_ep->iface,
                                                   uct_rc_verbs_iface_t);
     uct_rc_verbs_ep_t *ep        = ucs_derived_of(tl_ep, uct_rc_verbs_ep_t);
     size_t total_length          = uct_iov_total_length(iov, iovcnt);
     ucs_status_t status;
+    clock_gettime(CLOCK_MONOTONIC, &start1);
 
     UCT_CHECK_IOV_SIZE(iovcnt, iface->config.max_send_sge,
                        "uct_rc_verbs_ep_get_zcopy");
@@ -264,6 +267,12 @@ ucs_status_t uct_rc_verbs_ep_get_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov,
         UCT_RC_RDMA_READ_POSTED(&iface->super, total_length);
         UCT_TL_EP_STAT_OP(&ep->super.super, GET, ZCOPY, total_length);
     }
+    clock_gettime(CLOCK_MONOTONIC, &start2);
+    elapsed_ms1 = (start2.tv_sec - start1.tv_sec) * 1000.0 +
+    (start2.tv_nsec - start1.tv_nsec) / 1000000.0;
+
+    ucs_info("IB Time cost (rdma): %.3f ms, total transfer size is %zu \n", elapsed_ms1, total_length);
+
     return status;
 }
 
