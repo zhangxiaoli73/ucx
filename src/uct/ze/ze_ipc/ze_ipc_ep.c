@@ -140,6 +140,8 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     int local_fd;
     unsigned cmd_list_idx;
     struct timespec start1, start2, start3, end;
+    struct timespec debug1, debug2;
+    double elapsed_debug1, elapsed_debug2;
     double elapsed_ms1, elapsed_ms2, elapsed_ms3, elapsed_ms4;
 
     clock_gettime(CLOCK_MONOTONIC, &start1);
@@ -193,6 +195,7 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     offset          = remote_addr - key->address;
     mapped_rem_addr = (void *)((uintptr_t)mapped_addr + offset);
 
+    clock_gettime(CLOCK_MONOTONIC, &debug1);
     /* Allocate event descriptor */
     event_desc = ucs_malloc(sizeof(*event_desc), "uct_ze_ipc_event_desc_t");
     if (event_desc == NULL) {
@@ -270,6 +273,7 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     ret = zeCommandListAppendMemoryCopy(q_desc->cmd_list, dst, src,
                                         iov[0].length, event_desc->event,
                                         0, NULL);
+    clock_gettime(CLOCK_MONOTONIC, &debug2);
     if (ret != ZE_RESULT_SUCCESS) {
         ucs_error("zeCommandListAppendMemoryCopy failed with error 0x%x", ret);
         goto err_cleanup;
@@ -310,10 +314,18 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     elapsed_ms4 = (end.tv_sec - start1.tv_sec) * 1000.0 +
     (end.tv_nsec - start1.tv_nsec) / 1000000.0;
 
+    elapsed_debug1 = (start2.tv_sec - debug1.tv_sec) * 1000.0 +
+    (start2.tv_nsec - debug1.tv_nsec) / 1000000.0;
+
+    elapsed_debug2 = (debug2.tv_sec - start2.tv_sec) * 1000.0 +
+    (debug2.tv_nsec - start2.tv_nsec) / 1000000.0;
+
     ucs_trace("zeCommandListAppendMemoryCopy issued (async): cmd_list[%u/%u]=%p dst=%p src=%p len=%zu",
               cmd_list_idx, iface->num_cmd_lists, q_desc->cmd_list, dst, src, iov[0].length);
-    ucs_info("Time precost: %.3f ms, time post copy is %.3f, time copy xfer is %.3f, total_time is %.3f, total transfer size is %zu, cmd_list_idx=%u\n",
+    ucs_info("[UCX/ZE/IPC] Time pre cost: %.3f ms, time post copy is %.3f, time copy xfer is %.3f, total_time is %.3f, total transfer size is %zu, cmd_list_idx=%u\n",
              elapsed_ms1, elapsed_ms2, elapsed_ms3, elapsed_ms4, iov[0].length, cmd_list_idx);
+
+    ucs_info("[UCX/ZE/IPC] Time event handling cost: %.3f ms, copy submit cost is %.3f \n", elapsed_debug1, elapsed_debug2);
 
     return UCS_INPROGRESS;
 

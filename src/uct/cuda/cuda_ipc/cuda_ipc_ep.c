@@ -109,6 +109,12 @@ uct_cuda_ipc_post_cuda_async_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     CUcontext UCS_V_UNUSED cuda_context;
     CUstream *stream;
     size_t offset;
+    struct timespec start1, start2, start3, end;
+    double elapsed_ms1, elapsed_ms2, elapsed_ms3, elapsed_ms4;
+    struct timespec debug1, debug2;
+    double elapsed_debug1, elapsed_debug2;
+
+    clock_gettime(CLOCK_MONOTONIC, &start1);
 
     if (ucs_unlikely(0 == iov[0].length)) {
         ucs_trace_data("Zero length request: skip it");
@@ -135,6 +141,8 @@ uct_cuda_ipc_post_cuda_async_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     offset          = (uintptr_t)remote_addr - (uintptr_t)key->super.d_bptr;
     mapped_rem_addr = (void *) ((uintptr_t) mapped_addr + offset);
     ucs_assert(offset <= key->super.b_len);
+
+    clock_gettime(CLOCK_MONOTONIC, &debug1);
 
     /* round-robin */
     q_desc = &ctx_rsc->queue_desc[key->stream_id % iface->config.max_streams];
@@ -163,13 +171,15 @@ uct_cuda_ipc_post_cuda_async_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     src = (CUdeviceptr)
         ((direction == UCT_CUDA_IPC_PUT) ? iov[0].buffer : mapped_rem_addr);
 
+    clock_gettime(CLOCK_MONOTONIC, &start2);
+
     status = UCT_CUDADRV_FUNC_LOG_ERR(cuMemcpyDtoDAsync(dst, src, iov[0].length,
                                                         *stream));
+    clock_gettime(CLOCK_MONOTONIC, &debug2);
     if (UCS_OK != status) {
         ucs_mpool_put(cuda_ipc_event);
         goto out;
     }
-
     status = UCT_CUDADRV_FUNC_LOG_ERR(cuEventRecord(cuda_ipc_event->super.event,
                                                     *stream));
     if (UCS_OK != status) {
@@ -182,6 +192,9 @@ uct_cuda_ipc_post_cuda_async_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     }
 
     ucs_queue_push(&q_desc->event_queue, &cuda_ipc_event->super.queue);
+
+    clock_gettime(CLOCK_MONOTONIC, &start3);
+
     cuda_ipc_event->super.comp  = comp;
     cuda_ipc_event->mapped_addr = mapped_addr;
     cuda_ipc_event->d_bptr      = (uintptr_t)key->super.d_bptr;
@@ -189,6 +202,33 @@ uct_cuda_ipc_post_cuda_async_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     cuda_ipc_event->cuda_device = cuda_device;
     ucs_trace("cuMemcpyDtoDAsync issued :%p dst:%p, src:%p  len:%ld",
              cuda_ipc_event, (void *) dst, (void *) src, iov[0].length);
+
+    // debug
+    cuStreamSynchronize(*stream);
+
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    elapsed_ms1 = (start2.tv_sec - start1.tv_sec) * 1000.0 +
+    (start2.tv_nsec - start1.tv_nsec) / 1000000.0;
+
+    elapsed_ms2 = (start3.tv_sec - start2.tv_sec) * 1000.0 +
+    (start3.tv_nsec - start2.tv_nsec) / 1000000.0;
+
+    elapsed_ms3 = (end.tv_sec - start3.tv_sec) * 1000.0 +
+    (end.tv_nsec - start3.tv_nsec) / 1000000.0;
+
+    elapsed_ms4 = (end.tv_sec - start1.tv_sec) * 1000.0 +
+    (end.tv_nsec - start1.tv_nsec) / 1000000.0;
+
+    elapsed_debug1 = (start2.tv_sec - debug1.tv_sec) * 1000.0 +
+    (start2.tv_nsec - debug1.tv_nsec) / 1000000.0;
+
+    elapsed_debug2 = (debug2.tv_sec - start2.tv_sec) * 1000.0 +
+    (debug2.tv_nsec - start2.tv_nsec) / 1000000.0;
+
+    ucs_info("[UCX/CUDA/IPC]Time pre copy is: %.3f ms, time post copy is %.3f, time copy xfer is %.3f, total_time is %.3f, total transfer size is %zu\n",
+             elapsed_ms1, elapsed_ms2, elapsed_ms3, elapsed_ms4, iov[0].length);
+    ucs_info("[UCX/CUDA/IPC] Time event handling cost: %.3f ms, copy submit cost is %.3f \n", elapsed_debug1, elapsed_debug2);
     status = UCS_INPROGRESS;
 
 out:
