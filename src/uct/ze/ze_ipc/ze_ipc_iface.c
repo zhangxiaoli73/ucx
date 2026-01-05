@@ -21,6 +21,10 @@
 #include <unistd.h>
 
 
+/* Maximum number of events in the shared event pool */
+#define UCT_ZE_IPC_EVENT_POOL_SIZE 1024
+
+
 static ucs_config_field_t uct_ze_ipc_iface_config_table[] = {
     {"", "", NULL,
      ucs_offsetof(uct_ze_ipc_iface_config_t, super),
@@ -57,6 +61,66 @@ static ucs_config_field_t uct_ze_ipc_iface_config_table[] = {
      UCS_CONFIG_TYPE_TIME},
 
     {NULL}
+};
+
+
+/**
+ * Initialize event descriptor in memory pool.
+ * Similar to CUDA IPC's uct_cuda_base_event_desc_init.
+ * Creates a ZE event from the shared event pool.
+ */
+static void
+uct_ze_ipc_event_desc_init(ucs_mpool_t *mp, void *obj, void *chunk)
+{
+    uct_ze_ipc_iface_t *iface = *(uct_ze_ipc_iface_t **)ucs_mpool_priv(mp);
+    uct_ze_ipc_event_desc_t *event_desc = (uct_ze_ipc_event_desc_t *)obj;
+    ze_event_desc_t event_desc_ze = {};
+    ze_result_t ret;
+
+    /* Allocate event index from shared pool */
+    event_desc->event_idx = iface->next_event_idx++;
+    if (event_desc->event_idx >= UCT_ZE_IPC_EVENT_POOL_SIZE) {
+        ucs_fatal("ze_ipc: event pool exhausted (max=%d)", UCT_ZE_IPC_EVENT_POOL_SIZE);
+    }
+
+    /* Create event from shared pool */
+    event_desc_ze.stype  = ZE_STRUCTURE_TYPE_EVENT_DESC;
+    event_desc_ze.index  = event_desc->event_idx;
+    event_desc_ze.signal = ZE_EVENT_SCOPE_FLAG_HOST;
+    event_desc_ze.wait   = ZE_EVENT_SCOPE_FLAG_HOST;
+
+    ret = zeEventCreate(iface->ze_event_pool, &event_desc_ze, &event_desc->event);
+    if (ret != ZE_RESULT_SUCCESS) {
+        ucs_fatal("ze_ipc: zeEventCreate failed with error 0x%x", ret);
+    }
+
+    ucs_debug("ze_ipc: initialized event descriptor %p with event %p (idx=%u)",
+              event_desc, event_desc->event, event_desc->event_idx);
+}
+
+
+/**
+ * Cleanup event descriptor when memory pool is destroyed.
+ * Similar to CUDA IPC's uct_cuda_base_event_desc_cleanup.
+ */
+static void
+uct_ze_ipc_event_desc_cleanup(ucs_mpool_t *mp, void *obj)
+{
+    uct_ze_ipc_event_desc_t *event_desc = (uct_ze_ipc_event_desc_t *)obj;
+
+    if (event_desc->event != NULL) {
+        zeEventDestroy(event_desc->event);
+        event_desc->event = NULL;
+    }
+}
+
+
+static ucs_mpool_ops_t uct_ze_ipc_event_desc_mpool_ops = {
+    .chunk_alloc   = ucs_mpool_chunk_malloc,
+    .chunk_release = ucs_mpool_chunk_free,
+    .obj_init      = uct_ze_ipc_event_desc_init,
+    .obj_cleanup   = uct_ze_ipc_event_desc_cleanup,
+    .obj_str       = NULL
 };
 
 
@@ -268,10 +332,9 @@ uct_ze_ipc_iface_progress(uct_iface_h tl_iface)
                 uct_invoke_completion(event_desc->comp, UCS_OK);
             }
 
-            /* Destroy event and pool */
-            zeEventDestroy(event_desc->event);
-            zeEventPoolDestroy(event_desc->event_pool);
-            ucs_free(event_desc);
+            /* Reset event for reuse and return to memory pool */
+            zeEventHostReset(event_desc->event);
+            ucs_mpool_put(event_desc);
 
             count++;
         }
@@ -446,6 +509,8 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
     uct_ze_ipc_iface_config_t *config;
     uct_ze_ipc_md_t *ze_md;
     ze_command_queue_desc_t queue_desc = {};
+    ze_event_pool_desc_t event_pool_desc = {};
+    ucs_mpool_params_t mp_params;
     uint32_t copy_ordinal = 0;
     uint32_t num_queues = 0;
     ucs_status_t status;
@@ -468,6 +533,8 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
     self->config         = *config;
     self->eventfd        = UCS_ASYNC_EVENTFD_INVALID_FD;
     self->next_cmd_list  = 0;
+    self->next_event_idx = 0;
+    self->ze_event_pool  = NULL;
 
     /* Find copy engine queue group ordinal and available queue count */
     status = uct_ze_ipc_find_copy_ordinal(self->ze_device, &copy_ordinal, &num_queues);
@@ -548,10 +615,56 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
     /* For backward compatibility, set first command list as default */
     self->cmd_list = self->queue_desc[0].cmd_list;
 
+    /*
+     * Create shared event pool for all events.
+     * Similar to CUDA IPC which pre-creates events in mpool init.
+     * This avoids expensive zeEventPoolCreate/zeEventCreate on every operation.
+     */
+    event_pool_desc.stype = ZE_STRUCTURE_TYPE_EVENT_POOL_DESC;
+    event_pool_desc.count = UCT_ZE_IPC_EVENT_POOL_SIZE;
+    event_pool_desc.flags = ZE_EVENT_POOL_FLAG_HOST_VISIBLE;
+
+    ret = zeEventPoolCreate(self->ze_context, &event_pool_desc, 1,
+                            &self->ze_device, &self->ze_event_pool);
+    if (ret != ZE_RESULT_SUCCESS) {
+        ucs_error("ze_ipc_iface: zeEventPoolCreate failed with error 0x%x", ret);
+        /* Clean up command lists */
+        for (i = 0; i < self->num_cmd_lists; i++) {
+            zeCommandListDestroy(self->queue_desc[i].cmd_list);
+        }
+        return UCS_ERR_IO_ERROR;
+    }
+
+    /*
+     * Initialize memory pool for event descriptors.
+     * Similar to CUDA IPC's event_mp in uct_cuda_ctx_rsc_t.
+     * Events are pre-created in obj_init callback.
+     */
+    ucs_mpool_params_reset(&mp_params);
+    mp_params.priv_size       = sizeof(uct_ze_ipc_iface_t *);
+    mp_params.elem_size       = sizeof(uct_ze_ipc_event_desc_t);
+    mp_params.elems_per_chunk = 128;
+    mp_params.max_elems       = UCT_ZE_IPC_EVENT_POOL_SIZE;
+    mp_params.ops             = &uct_ze_ipc_event_desc_mpool_ops;
+    mp_params.name            = "ze_ipc_event_descriptors";
+
+    status = ucs_mpool_init(&mp_params, &self->event_desc_mp);
+    if (status != UCS_OK) {
+        ucs_error("ze_ipc_iface: failed to initialize event descriptor mpool");
+        zeEventPoolDestroy(self->ze_event_pool);
+        for (i = 0; i < self->num_cmd_lists; i++) {
+            zeCommandListDestroy(self->queue_desc[i].cmd_list);
+        }
+        return status;
+    }
+
+    /* Store iface pointer in mpool private data for obj_init callback */
+    *(uct_ze_ipc_iface_t **)ucs_mpool_priv(&self->event_desc_mp) = self;
+
     ucs_info("ze_ipc_iface: initialized iface for device %p context %p "
-             "(pid=%d, copy_ordinal=%u, num_cmd_lists=%u)",
+             "(pid=%d, copy_ordinal=%u, num_cmd_lists=%u, event_pool_size=%d)",
              self->ze_device, self->ze_context, getpid(), copy_ordinal,
-             self->num_cmd_lists);
+             self->num_cmd_lists, UCT_ZE_IPC_EVENT_POOL_SIZE);
 
     return UCS_OK;
 }
@@ -574,13 +687,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_ze_ipc_iface_t)
             if (event_desc->dup_fd >= 0) {
                 close(event_desc->dup_fd);
             }
-            if (event_desc->event != NULL) {
-                zeEventDestroy(event_desc->event);
-            }
-            if (event_desc->event_pool != NULL) {
-                zeEventPoolDestroy(event_desc->event_pool);
-            }
-            ucs_free(event_desc);
+            /* Event will be destroyed by mpool cleanup, don't destroy here */
+            ucs_mpool_put(event_desc);
         }
     }
 
@@ -595,13 +703,16 @@ static UCS_CLASS_CLEANUP_FUNC(uct_ze_ipc_iface_t)
         if (event_desc->dup_fd >= 0) {
             close(event_desc->dup_fd);
         }
-        if (event_desc->event != NULL) {
-            zeEventDestroy(event_desc->event);
-        }
-        if (event_desc->event_pool != NULL) {
-            zeEventPoolDestroy(event_desc->event_pool);
-        }
-        ucs_free(event_desc);
+        /* Event will be destroyed by mpool cleanup, don't destroy here */
+        ucs_mpool_put(event_desc);
+    }
+
+    /* Cleanup event descriptor memory pool (will destroy all events) */
+    ucs_mpool_cleanup(&self->event_desc_mp, 1);
+
+    /* Destroy shared event pool */
+    if (self->ze_event_pool != NULL) {
+        zeEventPoolDestroy(self->ze_event_pool);
     }
 
     /* Destroy all command lists */

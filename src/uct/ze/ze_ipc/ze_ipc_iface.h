@@ -47,7 +47,8 @@ typedef struct uct_ze_ipc_iface {
     ze_command_queue_handle_t    cmd_queue;      /* deprecated, kept for compatibility */
     ze_command_list_handle_t     cmd_list;       /* deprecated, kept for compatibility */
     uct_ze_ipc_iface_config_t    config;
-    ucs_mpool_t                  event_pool;
+    ucs_mpool_t                  event_desc_mp;  /* memory pool for event descriptors */
+    ze_event_pool_handle_t       ze_event_pool;  /* shared event pool for all events */
     ucs_queue_head_t             outstanding;    /* deprecated, kept for compatibility */
     int                          eventfd;        /* event fd for async notifications */
 
@@ -56,18 +57,19 @@ typedef struct uct_ze_ipc_iface {
     ucs_queue_head_t             active_queue;   /* queue of active queue descriptors */
     unsigned                     num_cmd_lists;  /* actual number of command lists */
     unsigned                     next_cmd_list;  /* round-robin index for load balancing */
+    unsigned                     next_event_idx; /* next event index in shared pool */
 } uct_ze_ipc_iface_t;
 
 
 typedef struct uct_ze_ipc_event_desc {
     ze_event_handle_t   event;
-    ze_event_pool_handle_t event_pool;
     void               *mapped_addr;
     uct_completion_t   *comp;
     ucs_queue_elem_t    queue;
     int                 dup_fd;     /* duplicated fd to close, or -1 if none */
     pid_t               pid;        /* remote process id for cache lookup */
     uintptr_t           address;    /* remote base address for cache lookup */
+    unsigned            event_idx;  /* index in shared event pool */
 } uct_ze_ipc_event_desc_t;
 
 

@@ -129,8 +129,6 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     uct_ze_ipc_key_t *key     = (uct_ze_ipc_key_t *)rkey;
     uct_ze_ipc_event_desc_t *event_desc;
     uct_ze_ipc_queue_desc_t *q_desc;
-    ze_event_pool_desc_t event_pool_desc = {};
-    ze_event_desc_t event_desc_ze = {};
     void *mapped_addr = NULL;
     void *mapped_rem_addr;
     void *dst, *src;
@@ -196,10 +194,14 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     mapped_rem_addr = (void *)((uintptr_t)mapped_addr + offset);
 
     clock_gettime(CLOCK_MONOTONIC, &debug1);
-    /* Allocate event descriptor */
-    event_desc = ucs_malloc(sizeof(*event_desc), "uct_ze_ipc_event_desc_t");
-    if (event_desc == NULL) {
-        ucs_error("failed to allocate event descriptor");
+    /*
+     * Get event descriptor from memory pool.
+     * Similar to CUDA IPC: ucs_mpool_get(&ctx_rsc->super.event_mp)
+     * Event is pre-created in mpool init, avoiding expensive zeEventCreate.
+     */
+    event_desc = ucs_mpool_get(&iface->event_desc_mp);
+    if (ucs_unlikely(event_desc == NULL)) {
+        ucs_error("ze_ipc_ep: failed to allocate event descriptor from mpool");
         uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->address, mapped_addr,
                                    iface->ze_context, local_fd,
                                    iface->config.enable_cache);
@@ -207,42 +209,9 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     }
 
     /* Store information for cache-based cleanup */
-    event_desc->dup_fd = local_fd;
-    event_desc->pid    = ep->remote_pid;
+    event_desc->dup_fd  = local_fd;
+    event_desc->pid     = ep->remote_pid;
     event_desc->address = key->address;
-
-    /* Create event pool and event for tracking completion */
-    event_pool_desc.stype = ZE_STRUCTURE_TYPE_EVENT_POOL_DESC;
-    event_pool_desc.count = 1;
-    event_pool_desc.flags = ZE_EVENT_POOL_FLAG_HOST_VISIBLE;
-
-    ret = zeEventPoolCreate(iface->ze_context, &event_pool_desc, 1,
-                            &iface->ze_device, &event_desc->event_pool);
-    if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("zeEventPoolCreate failed with error 0x%x", ret);
-        ucs_free(event_desc);
-        uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->address, mapped_addr,
-                                   iface->ze_context, local_fd,
-                                   iface->config.enable_cache);
-        return UCS_ERR_IO_ERROR;
-    }
-
-    event_desc_ze.stype = ZE_STRUCTURE_TYPE_EVENT_DESC;
-    event_desc_ze.index = 0;
-    event_desc_ze.signal = ZE_EVENT_SCOPE_FLAG_HOST;
-    event_desc_ze.wait   = ZE_EVENT_SCOPE_FLAG_HOST;
-
-    ret = zeEventCreate(event_desc->event_pool, &event_desc_ze,
-                        &event_desc->event);
-    if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("zeEventCreate failed with error 0x%x", ret);
-        zeEventPoolDestroy(event_desc->event_pool);
-        ucs_free(event_desc);
-        uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->address, mapped_addr,
-                                   iface->ze_context, local_fd,
-                                   iface->config.enable_cache);
-        return UCS_ERR_IO_ERROR;
-    }
 
     /* Set up source and destination based on direction */
     if (direction == UCT_ZE_IPC_PUT) {
@@ -330,9 +299,9 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     return UCS_INPROGRESS;
 
 err_cleanup:
-    zeEventDestroy(event_desc->event);
-    zeEventPoolDestroy(event_desc->event_pool);
-    ucs_free(event_desc);
+    /* Reset event and return to memory pool */
+    zeEventHostReset(event_desc->event);
+    ucs_mpool_put(event_desc);
     uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->address, mapped_addr,
                                iface->ze_context, local_fd,
                                iface->config.enable_cache);
