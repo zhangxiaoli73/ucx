@@ -213,33 +213,33 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     event_pool_desc.count = 1;
     event_pool_desc.flags = ZE_EVENT_POOL_FLAG_HOST_VISIBLE;
 
-    ret = zeEventPoolCreate(iface->ze_context, &event_pool_desc, 1,
-                            &iface->ze_device, &event_desc->event_pool);
-    if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("zeEventPoolCreate failed with error 0x%x", ret);
-        ucs_free(event_desc);
-        uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->address, mapped_addr,
-                                   iface->ze_context, local_fd,
-                                   iface->config.enable_cache);
-        return UCS_ERR_IO_ERROR;
-    }
+//    ret = zeEventPoolCreate(iface->ze_context, &event_pool_desc, 1,
+//                            &iface->ze_device, &event_desc->event_pool);
+//    if (ret != ZE_RESULT_SUCCESS) {
+//        ucs_error("zeEventPoolCreate failed with error 0x%x", ret);
+//        ucs_free(event_desc);
+//        uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->address, mapped_addr,
+//                                   iface->ze_context, local_fd,
+//                                   iface->config.enable_cache);
+//        return UCS_ERR_IO_ERROR;
+//    }
 
     event_desc_ze.stype = ZE_STRUCTURE_TYPE_EVENT_DESC;
     event_desc_ze.index = 0;
     event_desc_ze.signal = ZE_EVENT_SCOPE_FLAG_HOST;
     event_desc_ze.wait   = ZE_EVENT_SCOPE_FLAG_HOST;
 
-    ret = zeEventCreate(event_desc->event_pool, &event_desc_ze,
-                        &event_desc->event);
-    if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("zeEventCreate failed with error 0x%x", ret);
-        zeEventPoolDestroy(event_desc->event_pool);
-        ucs_free(event_desc);
-        uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->address, mapped_addr,
-                                   iface->ze_context, local_fd,
-                                   iface->config.enable_cache);
-        return UCS_ERR_IO_ERROR;
-    }
+//    ret = zeEventCreate(event_desc->event_pool, &event_desc_ze,
+//                        &event_desc->event);
+//    if (ret != ZE_RESULT_SUCCESS) {
+//        ucs_error("zeEventCreate failed with error 0x%x", ret);
+//        zeEventPoolDestroy(event_desc->event_pool);
+//        ucs_free(event_desc);
+//        uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->address, mapped_addr,
+//                                   iface->ze_context, local_fd,
+//                                   iface->config.enable_cache);
+//        return UCS_ERR_IO_ERROR;
+//    }
 
     /* Set up source and destination based on direction */
     if (direction == UCT_ZE_IPC_PUT) {
@@ -268,8 +268,7 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
      * explicit close/execute/reset calls.
      */
     ret = zeCommandListAppendMemoryCopy(q_desc->cmd_list, dst, src,
-                                        iov[0].length, event_desc->event,
-                                        0, NULL);
+                                        iov[0].length, NULL, 0, NULL);
     if (ret != ZE_RESULT_SUCCESS) {
         ucs_error("zeCommandListAppendMemoryCopy failed with error 0x%x", ret);
         goto err_cleanup;
@@ -280,12 +279,12 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     event_desc->comp        = comp;
 
     /* Add to active queue if this is the first event for this command list */
-    if (ucs_queue_is_empty(&q_desc->event_queue)) {
-        ucs_queue_push(&iface->active_queue, &q_desc->queue);
-    }
+//    if (ucs_queue_is_empty(&q_desc->event_queue)) {
+//        ucs_queue_push(&iface->active_queue, &q_desc->queue);
+//    }
 
     /* Push event to this command list's event queue */
-    ucs_queue_push(&q_desc->event_queue, &event_desc->queue);
+//    ucs_queue_push(&q_desc->event_queue, &event_desc->queue);
 
     clock_gettime(CLOCK_MONOTONIC, &end);
 
@@ -306,8 +305,8 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     return UCS_INPROGRESS;
 
 err_cleanup:
-    zeEventDestroy(event_desc->event);
-    zeEventPoolDestroy(event_desc->event_pool);
+//    zeEventDestroy(event_desc->event);
+//    zeEventPoolDestroy(event_desc->event_pool);
     ucs_free(event_desc);
     uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->address, mapped_addr,
                                iface->ze_context, local_fd,
