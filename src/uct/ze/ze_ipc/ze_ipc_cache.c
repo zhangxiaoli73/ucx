@@ -280,11 +280,10 @@ ucs_status_t uct_ze_ipc_unmap_memhandle(pid_t pid, uintptr_t address,
 }
 
 
-UCS_PROFILE_FUNC(ucs_status_t, uct_ze_ipc_map_memhandle,
-                 (key, ze_context, ze_device, mapped_addr, dup_fd),
-                 uct_ze_ipc_key_t *key, ze_context_handle_t ze_context,
-                 ze_device_handle_t ze_device,
-                 void **mapped_addr, int *dup_fd)
+ucs_status_t uct_ze_ipc_map_memhandle(uct_ze_ipc_key_t *key,
+                                      ze_context_handle_t ze_context,
+                                      ze_device_handle_t ze_device,
+                                      void **mapped_addr, int *dup_fd)
 {
     uct_ze_ipc_cache_t *cache;
     ucs_status_t status;

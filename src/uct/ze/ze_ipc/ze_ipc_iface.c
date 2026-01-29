@@ -32,7 +32,7 @@ static ucs_config_field_t uct_ze_ipc_iface_config_table[] = {
      UCS_CONFIG_TYPE_UINT},
 
     {"MAX_CMD_LISTS", UCS_PP_MAKE_STRING(UCT_ZE_IPC_MAX_PEERS),
-     "Max number of command lists to make concurrent progress on",
+     "Max number of command lists (upper limit, actual count matches copy engine queues)",
      ucs_offsetof(uct_ze_ipc_iface_config_t, max_cmd_lists),
      UCS_CONFIG_TYPE_UINT},
 
@@ -219,6 +219,81 @@ uct_ze_ipc_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *iface_attr)
 }
 
 
+/**
+ * Allocate an event from the shared event pool
+ * Returns event index on success, -1 on failure
+ */
+int uct_ze_ipc_alloc_event(uct_ze_ipc_iface_t *iface, ze_event_handle_t *event_p)
+{
+    unsigned i, word_idx, bit_idx;
+    uint64_t mask;
+    ze_event_desc_t event_desc;
+    ze_result_t ret;
+
+    ucs_spin_lock(&iface->event_lock);
+
+    /* Find first free event in bitmap */
+    for (i = 0; i < iface->event_pool_size; i++) {
+        word_idx = i / 64;
+        bit_idx  = i % 64;
+        mask     = 1ULL << bit_idx;
+
+        if (!(iface->event_bitmap[word_idx] & mask)) {
+            /* Found free event, mark as used */
+            iface->event_bitmap[word_idx] |= mask;
+            ucs_spin_unlock(&iface->event_lock);
+
+            /* Create event from shared pool */
+            event_desc.stype  = ZE_STRUCTURE_TYPE_EVENT_DESC;
+            event_desc.pNext  = NULL;
+            event_desc.index  = i;
+            event_desc.signal = ZE_EVENT_SCOPE_FLAG_HOST;
+            event_desc.wait   = ZE_EVENT_SCOPE_FLAG_HOST;
+
+            ret = zeEventCreate(iface->ze_event_pool, &event_desc, event_p);
+            if (ret != ZE_RESULT_SUCCESS) {
+                ucs_error("zeEventCreate failed with error 0x%x", ret);
+                /* Mark as free again */
+                ucs_spin_lock(&iface->event_lock);
+                iface->event_bitmap[word_idx] &= ~mask;
+                ucs_spin_unlock(&iface->event_lock);
+                return -1;
+            }
+
+            return i;
+        }
+    }
+
+    ucs_spin_unlock(&iface->event_lock);
+    ucs_warn("ze_ipc: event pool exhausted (size=%u)", iface->event_pool_size);
+    return -1;
+}
+
+/**
+ * Free an event back to the shared event pool
+ */
+void uct_ze_ipc_free_event(uct_ze_ipc_iface_t *iface,
+                           ze_event_handle_t event,
+                           unsigned event_index)
+{
+    unsigned word_idx, bit_idx;
+    uint64_t mask;
+
+    if (event != NULL) {
+        zeEventDestroy(event);
+    }
+
+    if (event_index != (unsigned)-1) {
+        word_idx = event_index / 64;
+        bit_idx  = event_index % 64;
+        mask     = 1ULL << bit_idx;
+
+        ucs_spin_lock(&iface->event_lock);
+        iface->event_bitmap[word_idx] &= ~mask;
+        ucs_spin_unlock(&iface->event_lock);
+    }
+}
+
 static unsigned
 uct_ze_ipc_iface_progress(uct_iface_h tl_iface)
 {
@@ -268,9 +343,19 @@ uct_ze_ipc_iface_progress(uct_iface_h tl_iface)
                 uct_invoke_completion(event_desc->comp, UCS_OK);
             }
 
-            /* Destroy event and pool */
-            zeEventDestroy(event_desc->event);
-            zeEventPoolDestroy(event_desc->event_pool);
+            /* Free event back to shared pool or destroy private pool */
+            if (event_desc->event_index != (unsigned)-1) {
+                /* Using shared event pool */
+                uct_ze_ipc_free_event(iface, event_desc->event, event_desc->event_index);
+            } else {
+                /* Using private event pool (backward compatibility) */
+                if (event_desc->event != NULL) {
+                    zeEventDestroy(event_desc->event);
+                }
+                if (event_desc->event_pool != NULL) {
+                    zeEventPoolDestroy(event_desc->event_pool);
+                }
+            }
             ucs_free(event_desc);
 
             count++;
@@ -446,11 +531,13 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
     uct_ze_ipc_iface_config_t *config;
     uct_ze_ipc_md_t *ze_md;
     ze_command_queue_desc_t queue_desc = {};
+    ze_event_pool_desc_t event_pool_desc;
     uint32_t copy_ordinal = 0;
     uint32_t num_queues = 0;
     ucs_status_t status;
     ze_result_t ret;
     unsigned i;
+    size_t bitmap_size;
 
     config = ucs_derived_of(tl_config, uct_ze_ipc_iface_config_t);
     ze_md  = ucs_derived_of(md, uct_ze_ipc_md_t);
@@ -475,29 +562,44 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
         return status;
     }
 
-    /* Validate and adjust max_cmd_lists based on hardware capabilities */
-    if (config->max_cmd_lists > UCT_ZE_IPC_MAX_PEERS) {
-        ucs_error("ze_ipc_iface: invalid max_cmd_lists value (%u > %u)",
-                  config->max_cmd_lists, UCT_ZE_IPC_MAX_PEERS);
-        return UCS_ERR_INVALID_PARAM;
+    /*
+     * Determine number of command lists based on hardware Copy Engine availability.
+     *
+     * Strategy:
+     * 1. If dedicated Copy Engines exist: create one command list per Copy Engine queue
+     * 2. If no Copy Engines: create 1 command list (fallback to compute engine)
+     * 3. Respect user configuration limit (MAX_CMD_LISTS) as upper bound
+     *
+     * Rationale:
+     * - Each Copy Engine queue can execute independently in parallel
+     * - Creating more command lists than hardware queues provides no benefit
+     * - One command list per Copy Engine queue maximizes hardware utilization
+     */
+    if (num_queues == 0) {
+        /* No copy engines available, use single command list on compute engine */
+        self->num_cmd_lists = 1;
+        ucs_info("ze_ipc_iface: no dedicated copy engines found, using 1 command list "
+                 "on queue group %u (compute engine fallback)", copy_ordinal);
+    } else {
+        /* Match command list count to available Copy Engine queues */
+        self->num_cmd_lists = ucs_min(num_queues, config->max_cmd_lists);
+
+        if (self->num_cmd_lists < num_queues) {
+            ucs_info("ze_ipc_iface: limiting command lists to %u (hardware has %u copy queues, "
+                     "config limit is %u)", self->num_cmd_lists, num_queues,
+                     config->max_cmd_lists);
+        } else {
+            ucs_info("ze_ipc_iface: creating %u command list(s) to match %u copy engine queue(s) "
+                     "on queue group %u", self->num_cmd_lists, num_queues, copy_ordinal);
+        }
     }
 
-    /*
-     * Create multiple immediate command lists for parallel execution.
-     *
-     * Key insight from Level Zero specification:
-     * - For immediate command lists, queue_desc.index MUST be 0
-     * - Multiple immediate command lists can be created with the same index=0
-     * - The driver automatically manages parallel execution across hardware queues
-     * - Each immediate command list is independent and can execute concurrently
-     *
-     * This is different from regular command queues where different index values
-     * (0, 1, 2...) can be used to explicitly select different hardware queues.
-     */
-    self->num_cmd_lists = config->max_cmd_lists;
-    ucs_info("ze_ipc_iface: creating %u immediate command list(s) on queue group %u "
-             "(numQueues=%u, driver manages parallel execution)",
-             self->num_cmd_lists, copy_ordinal, num_queues);
+    /* Validate final count */
+    if (self->num_cmd_lists > UCT_ZE_IPC_MAX_PEERS) {
+        ucs_error("ze_ipc_iface: computed num_cmd_lists (%u) exceeds maximum (%u)",
+                  self->num_cmd_lists, UCT_ZE_IPC_MAX_PEERS);
+        return UCS_ERR_INVALID_PARAM;
+    }
 
     /* Initialize active queue for command lists with pending operations */
     ucs_queue_head_init(&self->active_queue);
@@ -548,10 +650,62 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
     /* For backward compatibility, set first command list as default */
     self->cmd_list = self->queue_desc[0].cmd_list;
 
+    /*
+     * Create a shared event pool for all copy operations to avoid
+     * per-operation event pool creation/destruction overhead.
+     *
+     * Performance optimization:
+     * - Single event pool shared across all operations
+     * - Pre-allocated events reduce allocation overhead
+     * - Event reuse via bitmap tracking
+     * - Typical pool size: 1024 events (configurable)
+     */
+    self->event_pool_size = 1024;  /* TODO: make this configurable */
+
+    event_pool_desc.stype = ZE_STRUCTURE_TYPE_EVENT_POOL_DESC;
+    event_pool_desc.pNext = NULL;
+    event_pool_desc.flags = ZE_EVENT_POOL_FLAG_HOST_VISIBLE;
+    event_pool_desc.count = self->event_pool_size;
+
+    ret = zeEventPoolCreate(self->ze_context, &event_pool_desc, 1,
+                            &self->ze_device, &self->ze_event_pool);
+    if (ret != ZE_RESULT_SUCCESS) {
+        ucs_error("ze_ipc_iface: zeEventPoolCreate failed with error 0x%x", ret);
+        /* Clean up command lists */
+        for (i = 0; i < self->num_cmd_lists; i++) {
+            zeCommandListDestroy(self->queue_desc[i].cmd_list);
+        }
+        return UCS_ERR_IO_ERROR;
+    }
+
+    /* Initialize event bitmap for tracking free events */
+    bitmap_size = (self->event_pool_size + 63) / 64;  /* Round up to 64-bit words */
+    self->event_bitmap = ucs_calloc(bitmap_size, sizeof(uint64_t), "ze_ipc_event_bitmap");
+    if (self->event_bitmap == NULL) {
+        ucs_error("ze_ipc_iface: failed to allocate event bitmap");
+        zeEventPoolDestroy(self->ze_event_pool);
+        for (i = 0; i < self->num_cmd_lists; i++) {
+            zeCommandListDestroy(self->queue_desc[i].cmd_list);
+        }
+        return UCS_ERR_NO_MEMORY;
+    }
+
+    /* Initialize spinlock for event allocation */
+    status = ucs_spinlock_init(&self->event_lock, 0);
+    if (status != UCS_OK) {
+        ucs_error("ze_ipc_iface: failed to initialize event_lock spinlock");
+        ucs_free(self->event_bitmap);
+        zeEventPoolDestroy(self->ze_event_pool);
+        for (i = 0; i < self->num_cmd_lists; i++) {
+            zeCommandListDestroy(self->queue_desc[i].cmd_list);
+        }
+        return status;
+    }
+
     ucs_info("ze_ipc_iface: initialized iface for device %p context %p "
-             "(pid=%d, copy_ordinal=%u, num_cmd_lists=%u)",
+             "(pid=%d, copy_ordinal=%u, num_cmd_lists=%u, event_pool_size=%u)",
              self->ze_device, self->ze_context, getpid(), copy_ordinal,
-             self->num_cmd_lists);
+             self->num_cmd_lists, self->event_pool_size);
 
     return UCS_OK;
 }
@@ -611,6 +765,19 @@ static UCS_CLASS_CLEANUP_FUNC(uct_ze_ipc_iface_t)
         }
     }
     /* cmd_queue is not used with immediate command lists */
+
+    /* Destroy shared event pool */
+    if (self->ze_event_pool != NULL) {
+        zeEventPoolDestroy(self->ze_event_pool);
+    }
+
+    /* Free event bitmap */
+    if (self->event_bitmap != NULL) {
+        ucs_free(self->event_bitmap);
+    }
+
+    /* Destroy spinlock */
+    ucs_spinlock_destroy(&self->event_lock);
 
     /* Close eventfd if created */
     if (self->eventfd != UCS_ASYNC_EVENTFD_INVALID_FD) {

@@ -129,8 +129,7 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     uct_ze_ipc_key_t *key     = (uct_ze_ipc_key_t *)rkey;
     uct_ze_ipc_event_desc_t *event_desc;
     uct_ze_ipc_queue_desc_t *q_desc;
-    ze_event_pool_desc_t event_pool_desc = {};
-    ze_event_desc_t event_desc_ze = {};
+    ze_event_handle_t event = NULL;
     void *mapped_addr = NULL;
     void *mapped_rem_addr;
     void *dst, *src;
@@ -138,9 +137,10 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     ze_result_t ret;
     ucs_status_t status;
     int local_fd;
+    int event_index = -1;
     unsigned cmd_list_idx;
-    struct timespec start1, start2, end;
-    double elapsed_ms1, elapsed_ms2, elapsed_ms3;
+    struct timespec start1, start2, start3, start4, end;
+    double elapsed_ms1, elapsed_ms2, elapsed_ms3, elapsed_ms4, elapsed_ms5;
 
     clock_gettime(CLOCK_MONOTONIC, &start1);
 
@@ -150,34 +150,34 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     }
 
     /* Print handle info for verification - should match PACK and UNPACK output */
-    {
-        const unsigned char *bytes = (const unsigned char *)&key->ipc_handle;
-        uint32_t sum = 0;
-        int local_dev_id = uct_ze_base_get_device_ordinal(iface->ze_device);
-        size_t i;
+    // {
+    //     const unsigned char *bytes = (const unsigned char *)&key->ipc_handle;
+    //     uint32_t sum = 0;
+    //     int local_dev_id = uct_ze_base_get_device_ordinal(iface->ze_device);
+    //     size_t i;
 
-        for (i = 0; i < sizeof(ze_ipc_mem_handle_t); i++) {
-            sum += bytes[i];
-            sum = (sum << 1) | (sum >> 31);
-        }
-        ucs_info("OPEN(receiver): remote_dev=%d local_dev=%d checksum=0x%08x "
-                 "handle[0-15]=%02x%02x%02x%02x%02x%02x%02x%02x"
-                 "%02x%02x%02x%02x%02x%02x%02x%02x remote_pid=%d local_pid=%d",
-                 key->dev_num, local_dev_id, sum,
-                 bytes[0], bytes[1], bytes[2], bytes[3],
-                 bytes[4], bytes[5], bytes[6], bytes[7],
-                 bytes[8], bytes[9], bytes[10], bytes[11],
-                 bytes[12], bytes[13], bytes[14], bytes[15],
-                 ep->remote_pid, getpid());
-    }
+    //     for (i = 0; i < sizeof(ze_ipc_mem_handle_t); i++) {
+    //         sum += bytes[i];
+    //         sum = (sum << 1) | (sum >> 31);
+    //     }
+    //     ucs_info("OPEN(receiver): remote_dev=%d local_dev=%d checksum=0x%08x "
+    //              "handle[0-15]=%02x%02x%02x%02x%02x%02x%02x%02x"
+    //              "%02x%02x%02x%02x%02x%02x%02x%02x remote_pid=%d local_pid=%d",
+    //              key->dev_num, local_dev_id, sum,
+    //              bytes[0], bytes[1], bytes[2], bytes[3],
+    //              bytes[4], bytes[5], bytes[6], bytes[7],
+    //              bytes[8], bytes[9], bytes[10], bytes[11],
+    //              bytes[12], bytes[13], bytes[14], bytes[15],
+    //              ep->remote_pid, getpid());
+    // }
 
-    ucs_info("ze_ipc_ep: post_copy direction=%s remote_addr=0x%lx length=%zu "
-             "local_device=%p (id=%d) context=%p",
-             (direction == UCT_ZE_IPC_PUT) ? "PUT" : "GET",
-             (unsigned long)remote_addr, iov[0].length,
-             (void*)iface->ze_device,
-             uct_ze_base_get_device_ordinal(iface->ze_device),
-             (void*)iface->ze_context);
+    // ucs_info("ze_ipc_ep: post_copy direction=%s remote_addr=0x%lx length=%zu "
+    //          "local_device=%p (id=%d) context=%p",
+    //          (direction == UCT_ZE_IPC_PUT) ? "PUT" : "GET",
+    //          (unsigned long)remote_addr, iov[0].length,
+    //          (void*)iface->ze_device,
+    //          uct_ze_base_get_device_ordinal(iface->ze_device),
+    //          (void*)iface->ze_context);
 
     /* Use cache to map IPC handle */
     status = uct_ze_ipc_map_memhandle(key, iface->ze_context, iface->ze_device,
@@ -186,6 +186,7 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
         ucs_error("ze_ipc_ep: uct_ze_ipc_map_memhandle failed");
         return status;
     }
+    clock_gettime(CLOCK_MONOTONIC, &start2);
 
     ucs_debug("ze_ipc_ep: IPC handle mapped (cached), mapped_addr=%p", mapped_addr);
 
@@ -193,53 +194,34 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     offset          = remote_addr - key->address;
     mapped_rem_addr = (void *)((uintptr_t)mapped_addr + offset);
 
+    /* Allocate event from shared pool for performance */
+    event_index = uct_ze_ipc_alloc_event(iface, &event);
+    if (event_index < 0) {
+        ucs_error("failed to allocate event from shared pool");
+        uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->address, mapped_addr,
+                                   iface->ze_context, local_fd,
+                                   iface->config.enable_cache);
+        return UCS_ERR_NO_RESOURCE;
+    }
+
     /* Allocate event descriptor */
     event_desc = ucs_malloc(sizeof(*event_desc), "uct_ze_ipc_event_desc_t");
     if (event_desc == NULL) {
         ucs_error("failed to allocate event descriptor");
+        uct_ze_ipc_free_event(iface, event, event_index);
         uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->address, mapped_addr,
                                    iface->ze_context, local_fd,
                                    iface->config.enable_cache);
         return UCS_ERR_NO_MEMORY;
     }
 
-    /* Store information for cache-based cleanup */
-    event_desc->dup_fd = local_fd;
-    event_desc->pid    = ep->remote_pid;
-    event_desc->address = key->address;
-
-    /* Create event pool and event for tracking completion */
-    event_pool_desc.stype = ZE_STRUCTURE_TYPE_EVENT_POOL_DESC;
-    event_pool_desc.count = 1;
-    event_pool_desc.flags = ZE_EVENT_POOL_FLAG_HOST_VISIBLE;
-
-//    ret = zeEventPoolCreate(iface->ze_context, &event_pool_desc, 1,
-//                            &iface->ze_device, &event_desc->event_pool);
-//    if (ret != ZE_RESULT_SUCCESS) {
-//        ucs_error("zeEventPoolCreate failed with error 0x%x", ret);
-//        ucs_free(event_desc);
-//        uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->address, mapped_addr,
-//                                   iface->ze_context, local_fd,
-//                                   iface->config.enable_cache);
-//        return UCS_ERR_IO_ERROR;
-//    }
-
-    event_desc_ze.stype = ZE_STRUCTURE_TYPE_EVENT_DESC;
-    event_desc_ze.index = 0;
-    event_desc_ze.signal = ZE_EVENT_SCOPE_FLAG_HOST;
-    event_desc_ze.wait   = ZE_EVENT_SCOPE_FLAG_HOST;
-
-//    ret = zeEventCreate(event_desc->event_pool, &event_desc_ze,
-//                        &event_desc->event);
-//    if (ret != ZE_RESULT_SUCCESS) {
-//        ucs_error("zeEventCreate failed with error 0x%x", ret);
-//        zeEventPoolDestroy(event_desc->event_pool);
-//        ucs_free(event_desc);
-//        uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->address, mapped_addr,
-//                                   iface->ze_context, local_fd,
-//                                   iface->config.enable_cache);
-//        return UCS_ERR_IO_ERROR;
-//    }
+    /* Store information for cache-based cleanup and event tracking */
+    event_desc->event       = event;
+    event_desc->event_pool  = NULL;  /* Using shared pool, not private */
+    event_desc->event_index = event_index;
+    event_desc->dup_fd      = local_fd;
+    event_desc->pid         = ep->remote_pid;
+    event_desc->address     = key->address;
 
     /* Set up source and destination based on direction */
     if (direction == UCT_ZE_IPC_PUT) {
@@ -250,7 +232,7 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
         src = mapped_rem_addr;
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &start2);
+    clock_gettime(CLOCK_MONOTONIC, &start3);
 
     /*
      * Select command list using round-robin scheduling
@@ -266,47 +248,59 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
      * Append memory copy to selected immediate command list with event signaling.
      * Immediate command lists execute asynchronously without needing
      * explicit close/execute/reset calls.
+     *
+     * Using event for completion tracking improves performance by:
+     * - Allowing async progress checking
+     * - Enabling proper completion callbacks
+     * - Supporting multiple outstanding operations
      */
     ret = zeCommandListAppendMemoryCopy(q_desc->cmd_list, dst, src,
-                                        iov[0].length, NULL, 0, NULL);
+                                        iov[0].length, event, 0, NULL);
     if (ret != ZE_RESULT_SUCCESS) {
         ucs_error("zeCommandListAppendMemoryCopy failed with error 0x%x", ret);
         goto err_cleanup;
     }
+
+    clock_gettime(CLOCK_MONOTONIC, &start4);
 
     /* Store event info for progress tracking */
     event_desc->mapped_addr = mapped_addr;
     event_desc->comp        = comp;
 
     /* Add to active queue if this is the first event for this command list */
-//    if (ucs_queue_is_empty(&q_desc->event_queue)) {
-//        ucs_queue_push(&iface->active_queue, &q_desc->queue);
-//    }
+    if (ucs_queue_is_empty(&q_desc->event_queue)) {
+        ucs_queue_push(&iface->active_queue, &q_desc->queue);
+    }
 
     /* Push event to this command list's event queue */
-//    ucs_queue_push(&q_desc->event_queue, &event_desc->queue);
+    ucs_queue_push(&q_desc->event_queue, &event_desc->queue);
 
     clock_gettime(CLOCK_MONOTONIC, &end);
 
     elapsed_ms1 = (start2.tv_sec - start1.tv_sec) * 1000.0 +
     (start2.tv_nsec - start1.tv_nsec) / 1000000.0;
 
-    elapsed_ms2 = (end.tv_sec - start2.tv_sec) * 1000.0 +
-    (end.tv_nsec - start2.tv_nsec) / 1000000.0;
+    elapsed_ms2 = (start3.tv_sec - start2.tv_sec) * 1000.0 +
+    (start3.tv_nsec - start2.tv_nsec) / 1000000.0;
 
-    elapsed_ms3 = (end.tv_sec - start1.tv_sec) * 1000.0 +
+    elapsed_ms3 = (start4.tv_sec - start3.tv_sec) * 1000.0 +
+    (start4.tv_nsec - start3.tv_nsec) / 1000000.0;
+
+    elapsed_ms4 = (end.tv_sec - start4.tv_sec) * 1000.0 +
+    (end.tv_nsec - start4.tv_nsec) / 1000000.0;
+
+    elapsed_ms5 = (end.tv_sec - start1.tv_sec) * 1000.0 +
     (end.tv_nsec - start1.tv_nsec) / 1000000.0;
 
     ucs_trace("zeCommandListAppendMemoryCopy issued (async): cmd_list[%u/%u]=%p dst=%p src=%p len=%zu",
               cmd_list_idx, iface->num_cmd_lists, q_desc->cmd_list, dst, src, iov[0].length);
-    ucs_info("Time cost: %.3f ms, time copy is %.3f, total_time is %.3f, total transfer size is %zu, cmd_list_idx=%u\n",
-             elapsed_ms1, elapsed_ms2, elapsed_ms3, iov[0].length, cmd_list_idx);
+    ucs_info("Time cost: %.3f ms - open ipc time is %.3f, creat event time is %.3f, copy time(host) is %.3f, other time is %.3f, total transfer size is %zu, cmd_list_idx=%u\n",
+             elapsed_ms5, elapsed_ms1, elapsed_ms2, elapsed_ms3, elapsed_ms4, iov[0].length, cmd_list_idx);
 
     return UCS_INPROGRESS;
 
 err_cleanup:
-//    zeEventDestroy(event_desc->event);
-//    zeEventPoolDestroy(event_desc->event_pool);
+    uct_ze_ipc_free_event(iface, event, event_index);
     ucs_free(event_desc);
     uct_ze_ipc_unmap_memhandle(ep->remote_pid, key->address, mapped_addr,
                                iface->ze_context, local_fd,

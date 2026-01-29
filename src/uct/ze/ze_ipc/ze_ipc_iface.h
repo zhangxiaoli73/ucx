@@ -9,6 +9,7 @@
 #include <uct/base/uct_iface.h>
 #include <ucs/arch/cpu.h>
 #include <ucs/async/eventfd.h>
+#include <ucs/type/spinlock.h>
 #include <level_zero/ze_api.h>
 
 #include "ze_ipc_md.h"
@@ -56,19 +57,46 @@ typedef struct uct_ze_ipc_iface {
     ucs_queue_head_t             active_queue;   /* queue of active queue descriptors */
     unsigned                     num_cmd_lists;  /* actual number of command lists */
     unsigned                     next_cmd_list;  /* round-robin index for load balancing */
+
+    /* Pre-allocated event pool for performance optimization */
+    ze_event_pool_handle_t       ze_event_pool;  /* shared event pool for all operations */
+    unsigned                     event_pool_size; /* number of events in the pool */
+    ucs_spinlock_t               event_lock;      /* lock for event allocation */
+    uint64_t                     *event_bitmap;   /* bitmap to track free events */
 } uct_ze_ipc_iface_t;
 
 
 typedef struct uct_ze_ipc_event_desc {
     ze_event_handle_t   event;
-    ze_event_pool_handle_t event_pool;
+    ze_event_pool_handle_t event_pool;  /* deprecated when using shared pool */
     void               *mapped_addr;
     uct_completion_t   *comp;
     ucs_queue_elem_t    queue;
     int                 dup_fd;     /* duplicated fd to close, or -1 if none */
     pid_t               pid;        /* remote process id for cache lookup */
     uintptr_t           address;    /* remote base address for cache lookup */
+    unsigned            event_index; /* index in shared event pool, or -1 if using private pool */
 } uct_ze_ipc_event_desc_t;
+
+
+/**
+ * Allocate an event from the shared event pool
+ *
+ * @param iface      Pointer to ze_ipc interface
+ * @param event_p    Pointer to store the allocated event handle
+ * @return           Event index on success, -1 on failure
+ */
+int uct_ze_ipc_alloc_event(uct_ze_ipc_iface_t *iface, ze_event_handle_t *event_p);
+
+/**
+ * Free an event back to the shared event pool
+ *
+ * @param iface       Pointer to ze_ipc interface
+ * @param event       Event handle to destroy
+ * @param event_index Index of the event in the pool
+ */
+void uct_ze_ipc_free_event(uct_ze_ipc_iface_t *iface, ze_event_handle_t event,
+                           unsigned event_index);
 
 
 #endif
