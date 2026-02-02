@@ -130,10 +130,16 @@ uct_ze_ipc_open_memhandle(uct_ze_ipc_key_t *key, ze_context_handle_t ze_context,
     ze_ipc_mem_handle_t local_handle;
     int remote_fd;
     ze_result_t ret;
+    struct timespec start1, start2, start3, end;
+    double elapsed_ms1, elapsed_ms2, elapsed_ms3, elapsed_ms4;
+
+    clock_gettime(CLOCK_MONOTONIC, &start1);
 
     /* Extract fd from IPC handle */
     memcpy(&local_handle, &key->ipc_handle, sizeof(local_handle));
     remote_fd = *(int*)local_handle.data;
+
+    clock_gettime(CLOCK_MONOTONIC, &start2);
 
     /* Duplicate the file descriptor from remote process */
     if (key->pid != getpid() && remote_fd > 0 && remote_fd < 65536) {
@@ -148,8 +154,11 @@ uct_ze_ipc_open_memhandle(uct_ze_ipc_key_t *key, ze_context_handle_t ze_context,
         *dup_fd = -1;
     }
 
+    clock_gettime(CLOCK_MONOTONIC, &start3);
     ret = zeMemOpenIpcHandle(ze_context, ze_device, local_handle,
                              0, mapped_addr);
+    // clock_gettime(CLOCK_MONOTONIC, &start4);
+
     if (ret != ZE_RESULT_SUCCESS) {
         ucs_error("zeMemOpenIpcHandle failed with error 0x%x", ret);
         if (*dup_fd >= 0) {
@@ -158,6 +167,23 @@ uct_ze_ipc_open_memhandle(uct_ze_ipc_key_t *key, ze_context_handle_t ze_context,
         }
         return UCS_ERR_IO_ERROR;
     }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    elapsed_ms1 = (start2.tv_sec - start1.tv_sec) * 1000.0 +
+    (start2.tv_nsec - start1.tv_nsec) / 1000000.0;
+
+    elapsed_ms2 = (start3.tv_sec - start2.tv_sec) * 1000.0 +
+    (start3.tv_nsec - start2.tv_nsec) / 1000000.0;
+
+    elapsed_ms3 = (end.tv_sec - start3.tv_sec) * 1000.0 +
+    (end.tv_nsec - start3.tv_nsec) / 1000000.0;
+
+    elapsed_ms4 = (end.tv_sec - start1.tv_sec) * 1000.0 +
+    (end.tv_nsec - start1.tv_nsec) / 1000000.0;
+
+   ucs_info("[uct_ze_ipc_open_memhandle] Time cost: %.3f ms - extract ipc handle is %.3f, get dup fd is %.3f, open ipc and others is %.3f \n",
+             elapsed_ms4, elapsed_ms1, elapsed_ms2, elapsed_ms3);
+
 
     return UCS_OK;
 }
@@ -280,17 +306,21 @@ ucs_status_t uct_ze_ipc_unmap_memhandle(pid_t pid, uintptr_t address,
 }
 
 
-ucs_status_t uct_ze_ipc_map_memhandle(uct_ze_ipc_key_t *key,
-                                      ze_context_handle_t ze_context,
-                                      ze_device_handle_t ze_device,
-                                      void **mapped_addr, int *dup_fd)
+UCS_PROFILE_FUNC(ucs_status_t, uct_ze_ipc_map_memhandle,
+                 (key, ze_context, ze_device, mapped_addr, dup_fd),
+                 uct_ze_ipc_key_t *key, ze_context_handle_t ze_context,
+                 ze_device_handle_t ze_device,
+                 void **mapped_addr, int *dup_fd)
 {
     uct_ze_ipc_cache_t *cache;
     ucs_status_t status;
     ucs_pgt_region_t *pgt_region;
     uct_ze_ipc_cache_region_t *region;
     int ret;
+    struct timespec start1, start2, start3, start4, end;
+    double elapsed_ms1, elapsed_ms2, elapsed_ms3, elapsed_ms4, elapsed_ms5;
 
+    clock_gettime(CLOCK_MONOTONIC, &start1);
     status = uct_ze_ipc_get_remote_cache(key->pid, ze_context, &cache);
     if (status != UCS_OK) {
         return status;
@@ -315,10 +345,12 @@ ucs_status_t uct_ze_ipc_map_memhandle(uct_ze_ipc_key_t *key,
         return UCS_OK;
     }
 
+    clock_gettime(CLOCK_MONOTONIC, &start2);
     status = uct_ze_ipc_open_memhandle(key, ze_context, ze_device, mapped_addr, dup_fd);
     if (ucs_unlikely(status != UCS_OK)) {
         goto err;
     }
+    clock_gettime(CLOCK_MONOTONIC, &start3);
 
     /* create new cache entry */
     ret = ucs_posix_memalign((void **)&region,
@@ -341,6 +373,7 @@ ucs_status_t uct_ze_ipc_map_memhandle(uct_ze_ipc_key_t *key,
     region->ze_context  = ze_context;
     region->dup_fd      = *dup_fd;
 
+    clock_gettime(CLOCK_MONOTONIC, &start4);
     status = UCS_PROFILE_CALL(ucs_pgtable_insert,
                               &cache->pgtable, &region->super);
     if (status == UCS_ERR_ALREADY_EXISTS) {
@@ -361,6 +394,25 @@ ucs_status_t uct_ze_ipc_map_memhandle(uct_ze_ipc_key_t *key,
 
     ucs_trace("%s: ze_ipc cache new region:"UCS_PGT_REGION_FMT" size:%lu",
               cache->name, UCS_PGT_REGION_ARG(&region->super), key->length);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    elapsed_ms1 = (start2.tv_sec - start1.tv_sec) * 1000.0 +
+    (start2.tv_nsec - start1.tv_nsec) / 1000000.0;
+
+    elapsed_ms2 = (start3.tv_sec - start2.tv_sec) * 1000.0 +
+    (start3.tv_nsec - start2.tv_nsec) / 1000000.0;
+
+    elapsed_ms3 = (start4.tv_sec - start3.tv_sec) * 1000.0 +
+    (start4.tv_nsec - start3.tv_nsec) / 1000000.0;
+
+    elapsed_ms4 = (end.tv_sec - start4.tv_sec) * 1000.0 +
+    (end.tv_nsec - start4.tv_nsec) / 1000000.0;
+
+    elapsed_ms5 = (end.tv_sec - start1.tv_sec) * 1000.0 +
+    (end.tv_nsec - start1.tv_nsec) / 1000000.0;
+
+   ucs_info("[uct_ze_ipc_map_memhandle]Time cost: %.3f ms - get cache is %.3f, open memory handle is %.3f, create cache entry is %.3f, insert page table is %.3f \n",
+             elapsed_ms5, elapsed_ms1, elapsed_ms2, elapsed_ms3, elapsed_ms4);
 
     status = UCS_OK;
 
