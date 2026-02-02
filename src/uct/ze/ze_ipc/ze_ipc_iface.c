@@ -556,6 +556,13 @@ static UCS_CLASS_INIT_FUNC(uct_ze_ipc_iface_t, uct_md_h md, uct_worker_h worker,
     self->eventfd        = UCS_ASYNC_EVENTFD_INVALID_FD;
     self->next_cmd_list  = 0;
 
+    /* Initialize pidfd cache for reducing pidfd_open system calls */
+    self->pidfd_cache = kh_init(ze_ipc_pidfd_cache);
+    if (self->pidfd_cache == NULL) {
+        ucs_error("ze_ipc_iface: failed to initialize pidfd cache");
+        return UCS_ERR_NO_MEMORY;
+    }
+
     /* Find copy engine queue group ordinal and available queue count */
     status = uct_ze_ipc_find_copy_ordinal(self->ze_device, &copy_ordinal, &num_queues);
     if (status != UCS_OK) {
@@ -715,6 +722,23 @@ static UCS_CLASS_CLEANUP_FUNC(uct_ze_ipc_iface_t)
 {
     uct_ze_ipc_event_desc_t *event_desc;
     unsigned i;
+    khiter_t iter;
+
+    /* Clean up pidfd cache */
+    if (self->pidfd_cache != NULL) {
+        for (iter = kh_begin(self->pidfd_cache);
+             iter != kh_end(self->pidfd_cache); ++iter) {
+            if (kh_exist(self->pidfd_cache, iter)) {
+                int pidfd = kh_value(self->pidfd_cache, iter);
+                pid_t pid = kh_key(self->pidfd_cache, iter);
+                close(pidfd);
+                ucs_debug("ze_ipc_iface: closed cached pidfd=%d for pid %d",
+                          pidfd, pid);
+            }
+        }
+        kh_destroy(ze_ipc_pidfd_cache, self->pidfd_cache);
+        ucs_debug("ze_ipc_iface: destroyed pidfd cache");
+    }
 
     /* Clean up outstanding events from all command list queues */
     for (i = 0; i < self->num_cmd_lists; i++) {

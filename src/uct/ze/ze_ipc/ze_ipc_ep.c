@@ -31,9 +31,118 @@
 #define UCT_ZE_IPC_GET 1
 
 /*
- * Duplicate a file descriptor from another process using pidfd_getfd.
+ * Get or create a cached pidfd for a remote process.
+ * This reduces the number of pidfd_open system calls by caching pidfds.
+ *
+ * @param iface       ze_ipc interface containing the pidfd cache
+ * @param remote_pid  PID of the remote process
+ * @return            Cached pidfd on success, -1 on error
+ */
+static int uct_ze_ipc_get_cached_pidfd(uct_ze_ipc_iface_t *iface, pid_t remote_pid)
+{
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_getfd)
+    khiter_t iter;
+    int ret, pidfd;
+
+    /* Check if pidfd is already cached */
+    iter = kh_get(ze_ipc_pidfd_cache, iface->pidfd_cache, remote_pid);
+
+    if (iter != kh_end(iface->pidfd_cache)) {
+        /* Cache hit */
+        pidfd = kh_value(iface->pidfd_cache, iter);
+        ucs_trace("ze_ipc: pidfd cache HIT for pid %d -> pidfd %d",
+                  remote_pid, pidfd);
+        return pidfd;
+    }
+
+    /* Cache miss - open new pidfd */
+    pidfd = syscall(SYS_pidfd_open, remote_pid, 0);
+    if (pidfd < 0) {
+        ucs_error("ze_ipc: pidfd_open(%d) failed: %m", remote_pid);
+        return -1;
+    }
+
+    /* Add to cache */
+    iter = kh_put(ze_ipc_pidfd_cache, iface->pidfd_cache, remote_pid, &ret);
+    if (ret >= 0) {
+        kh_value(iface->pidfd_cache, iter) = pidfd;
+        ucs_debug("ze_ipc: cached pidfd=%d for pid %d (cache size: %u)",
+                  pidfd, remote_pid, (unsigned)kh_size(iface->pidfd_cache));
+    } else {
+        ucs_warn("ze_ipc: failed to cache pidfd for pid %d", remote_pid);
+        /* Continue anyway - pidfd is still valid, just won't be cached */
+    }
+
+    return pidfd;
+#else
+    return -1;
+#endif
+}
+
+
+/*
+ * Duplicate a file descriptor from another process using cached pidfd.
  * This is needed because Level Zero IPC handles contain file descriptors
  * that must be duplicated when transferred between processes.
+ *
+ * Uses a cached pidfd to avoid repeated pidfd_open system calls for the
+ * same remote process, reducing overhead from 3 syscalls to 1 syscall
+ * per operation (after the first call).
+ *
+ * @param iface       ze_ipc interface containing the pidfd cache
+ * @param remote_pid  PID of the process that owns the fd
+ * @param remote_fd   File descriptor in the remote process
+ * @return            Local fd on success, -1 on error
+ */
+int uct_ze_ipc_dup_fd_from_pid_cached(uct_ze_ipc_iface_t *iface,
+                                      pid_t remote_pid, int remote_fd)
+{
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_getfd)
+    int pidfd, local_fd;
+    khiter_t iter;
+
+    /* Skip if same process */
+    if (remote_pid == getpid()) {
+        return remote_fd;
+    }
+
+    /* Get cached pidfd (or create new one) */
+    pidfd = uct_ze_ipc_get_cached_pidfd(iface, remote_pid);
+    if (pidfd < 0) {
+        return -1;
+    }
+
+    /* Duplicate the fd from remote process using cached pidfd */
+    local_fd = syscall(SYS_pidfd_getfd, pidfd, remote_fd, 0);
+    if (local_fd < 0) {
+        ucs_error("ze_ipc: pidfd_getfd(pidfd=%d, remote_fd=%d) failed: %m",
+                  pidfd, remote_fd);
+
+        /* Remote process may have exited - remove stale pidfd from cache */
+        iter = kh_get(ze_ipc_pidfd_cache, iface->pidfd_cache, remote_pid);
+        if (iter != kh_end(iface->pidfd_cache)) {
+            close(kh_value(iface->pidfd_cache, iter));
+            kh_del(ze_ipc_pidfd_cache, iface->pidfd_cache, iter);
+            ucs_debug("ze_ipc: removed stale pidfd for pid %d from cache",
+                      remote_pid);
+        }
+
+        return -1;
+    }
+
+    ucs_trace("ze_ipc: duplicated fd %d from pid %d -> local fd %d (cached pidfd)",
+              remote_fd, remote_pid, local_fd);
+    return local_fd;
+#else
+    ucs_error("ze_ipc: pidfd_getfd not supported on this system");
+    return -1;
+#endif
+}
+
+
+/*
+ * Legacy function for backward compatibility.
+ * New code should use uct_ze_ipc_dup_fd_from_pid_cached() instead.
  *
  * @param remote_pid  PID of the process that owns the fd
  * @param remote_fd   File descriptor in the remote process
@@ -66,7 +175,7 @@ int uct_ze_ipc_dup_fd_from_pid(pid_t remote_pid, int remote_fd)
     }
 
     close(pidfd);
-    ucs_debug("ze_ipc: duplicated fd %d from pid %d -> local fd %d",
+    ucs_debug("ze_ipc: duplicated fd %d from pid %d -> local fd %d (uncached)",
               remote_fd, remote_pid, local_fd);
     return local_fd;
 #else
@@ -179,8 +288,8 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
     //          uct_ze_base_get_device_ordinal(iface->ze_device),
     //          (void*)iface->ze_context);
 
-    /* Use cache to map IPC handle */
-    status = uct_ze_ipc_map_memhandle(key, iface->ze_context, iface->ze_device,
+    /* Use cache to map IPC handle (with pidfd caching) */
+    status = uct_ze_ipc_map_memhandle(iface, key, iface->ze_context, iface->ze_device,
                                       &mapped_addr, &local_fd);
     if (status != UCS_OK) {
         ucs_error("ze_ipc_ep: uct_ze_ipc_map_memhandle failed");

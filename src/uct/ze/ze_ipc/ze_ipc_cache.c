@@ -123,7 +123,8 @@ static void uct_ze_ipc_cache_purge(uct_ze_ipc_cache_t *cache)
 
 
 static ucs_status_t
-uct_ze_ipc_open_memhandle(uct_ze_ipc_key_t *key, ze_context_handle_t ze_context,
+uct_ze_ipc_open_memhandle(uct_ze_ipc_iface_t *iface, uct_ze_ipc_key_t *key,
+                          ze_context_handle_t ze_context,
                           ze_device_handle_t ze_device,
                           void **mapped_addr, int *dup_fd)
 {
@@ -141,9 +142,9 @@ uct_ze_ipc_open_memhandle(uct_ze_ipc_key_t *key, ze_context_handle_t ze_context,
 
     clock_gettime(CLOCK_MONOTONIC, &start2);
 
-    /* Duplicate the file descriptor from remote process */
+    /* Duplicate the file descriptor from remote process using cached pidfd */
     if (key->pid != getpid() && remote_fd > 0 && remote_fd < 65536) {
-        *dup_fd = uct_ze_ipc_dup_fd_from_pid(key->pid, remote_fd);
+        *dup_fd = uct_ze_ipc_dup_fd_from_pid_cached(iface, key->pid, remote_fd);
         if (*dup_fd < 0) {
             ucs_error("failed to duplicate fd %d from pid %d", remote_fd, key->pid);
             return UCS_ERR_IO_ERROR;
@@ -307,8 +308,9 @@ ucs_status_t uct_ze_ipc_unmap_memhandle(pid_t pid, uintptr_t address,
 
 
 UCS_PROFILE_FUNC(ucs_status_t, uct_ze_ipc_map_memhandle,
-                 (key, ze_context, ze_device, mapped_addr, dup_fd),
-                 uct_ze_ipc_key_t *key, ze_context_handle_t ze_context,
+                 (iface, key, ze_context, ze_device, mapped_addr, dup_fd),
+                 uct_ze_ipc_iface_t *iface, uct_ze_ipc_key_t *key,
+                 ze_context_handle_t ze_context,
                  ze_device_handle_t ze_device,
                  void **mapped_addr, int *dup_fd)
 {
@@ -346,7 +348,7 @@ UCS_PROFILE_FUNC(ucs_status_t, uct_ze_ipc_map_memhandle,
     }
 
     clock_gettime(CLOCK_MONOTONIC, &start2);
-    status = uct_ze_ipc_open_memhandle(key, ze_context, ze_device, mapped_addr, dup_fd);
+    status = uct_ze_ipc_open_memhandle(iface, key, ze_context, ze_device, mapped_addr, dup_fd);
     if (ucs_unlikely(status != UCS_OK)) {
         goto err;
     }
