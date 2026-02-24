@@ -48,7 +48,8 @@ static ucs_status_t uct_ze_copy_md_query(uct_md_h md, uct_md_attr_v2_t *md_attr)
     md_attr->alloc_mem_types  = UCS_BIT(UCS_MEMORY_TYPE_ZE_HOST) |
                                 UCS_BIT(UCS_MEMORY_TYPE_ZE_DEVICE) |
                                 UCS_BIT(UCS_MEMORY_TYPE_ZE_MANAGED);
-    md_attr->access_mem_types = UCS_BIT(UCS_MEMORY_TYPE_ZE_HOST) |
+    md_attr->access_mem_types = UCS_BIT(UCS_MEMORY_TYPE_HOST) |
+	                        UCS_BIT(UCS_MEMORY_TYPE_ZE_HOST) |
                                 UCS_BIT(UCS_MEMORY_TYPE_ZE_DEVICE) |
                                 UCS_BIT(UCS_MEMORY_TYPE_ZE_MANAGED);
     md_attr->detect_mem_types = UCS_BIT(UCS_MEMORY_TYPE_ZE_HOST) |
@@ -127,6 +128,14 @@ uct_ze_copy_mem_reg(uct_md_h md, void *address, size_t length,
     *memh_p = (uct_mem_h)0xdeadbeef;
     return UCS_OK;
 }
+
+static ucs_status_t
+uct_ze_copy_mem_dereg(uct_md_h md, const uct_md_mem_dereg_params_t *params)
+{
+    /* memory de-registration is temporally not needed for ZE */
+    return UCS_OK;
+}
+
 
 static void uct_ze_copy_md_close(uct_md_h uct_md)
 {
@@ -248,9 +257,9 @@ static uct_md_ops_t md_ops = {
     .mem_free           = uct_ze_copy_mem_free,
     .mem_advise         = (uct_md_mem_advise_func_t)ucs_empty_function_return_unsupported,
     .mem_reg            = uct_ze_copy_mem_reg,
-    .mem_dereg          = ucs_empty_function_return_success,
+    .mem_dereg          = uct_ze_copy_mem_dereg,
     .mem_query          = uct_ze_copy_md_mem_query,
-    .mkey_pack          = ucs_empty_function_return_success,
+    .mkey_pack          = (uct_md_mkey_pack_func_t)ucs_empty_function_return_success,
     .mem_attach         = (uct_md_mem_attach_func_t)ucs_empty_function_return_unsupported,
     .detect_memory_type = uct_ze_copy_md_detect_memory_type,
 };
@@ -266,27 +275,30 @@ uct_ze_copy_md_open(uct_component_h component, const char *md_name,
     ze_context_desc_t context_desc = {};
     ze_result_t ret;
 
+    ucs_info("ze_copy_md: md_open called md_name=%s", md_name);
+
     ze_driver = uct_ze_base_get_driver();
     if (ze_driver == NULL) {
+        ucs_error("ze_copy_md: uct_ze_base_get_driver returned NULL");
         return UCS_ERR_NO_DEVICE;
     }
 
     md = ucs_malloc(sizeof(uct_ze_copy_md_t), "uct_ze_copy_md_t");
     if (NULL == md) {
-        ucs_error("Failed to allocate memory for uct_ze_copy_md_t");
+        ucs_error("ze_copy_md: Failed to allocate memory for uct_ze_copy_md_t");
         return UCS_ERR_NO_MEMORY;
     }
 
     md->ze_device = uct_ze_base_get_device(config->device_ordinal);
     if (md->ze_device == NULL) {
-        ucs_error("Failed to get device at ordial %d", config->device_ordinal);
+        ucs_error("ze_copy_md: Failed to get device at ordinal %d", config->device_ordinal);
         ucs_free(md);
         return UCS_ERR_NO_DEVICE;
     }
 
     ret = zeContextCreate(ze_driver, &context_desc, &md->ze_context);
     if (ret != ZE_RESULT_SUCCESS) {
-        ucs_error("zeContextCreate failed with error %x", ret);
+        ucs_error("ze_copy_md: zeContextCreate failed with error 0x%x", ret);
         ucs_free(md);
         return UCS_ERR_NO_DEVICE;
     }
@@ -295,6 +307,10 @@ uct_ze_copy_md_open(uct_component_h component, const char *md_name,
     md->super.component = &uct_ze_copy_component;
 
     *md_p = (uct_md_h)md;
+
+    ucs_info("ze_copy_md: md_open succeeded device=%p context=%p",
+             md->ze_device, md->ze_context);
+
     return UCS_OK;
 }
 

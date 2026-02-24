@@ -197,10 +197,10 @@ uct_ze_copy_estimate_perf(uct_iface_h tl_iface, uct_perf_attr_t *perf_attr)
 static uct_iface_internal_ops_t uct_ze_copy_iface_internal_ops = {
     .iface_query_v2         = uct_iface_base_query_v2,
     .iface_estimate_perf    = uct_ze_copy_estimate_perf,
-    .iface_vfs_refresh      = ucs_empty_function,
+    .iface_vfs_refresh      = (uct_iface_vfs_refresh_func_t)ucs_empty_function,
     .iface_mem_element_pack = (uct_iface_mem_element_pack_func_t)ucs_empty_function_return_unsupported,
-    .ep_query               = ucs_empty_function_return_unsupported,
-    .ep_invalidate          = ucs_empty_function_return_unsupported,
+    .ep_query               = (uct_ep_query_func_t)ucs_empty_function_return_unsupported,
+    .ep_invalidate          = (uct_ep_invalidate_func_t)ucs_empty_function_return_unsupported,
     .ep_connect_to_ep_v2    = (uct_ep_connect_to_ep_v2_func_t)ucs_empty_function_return_unsupported,
     .iface_is_reachable_v2  = uct_ze_copy_iface_is_reachable_v2,
     .ep_is_connected        = uct_base_ep_is_connected,
@@ -229,16 +229,19 @@ static UCS_CLASS_INIT_FUNC(uct_ze_copy_iface_t, uct_md_h md,
     /* TODO: choose device based on params */
     device = uct_ze_base_get_device(0);
     if (device == NULL) {
+        ucs_error("ze_copy_iface: uct_ze_base_get_device(0) returned NULL");
         return UCS_ERR_NO_DEVICE;
     }
 
     ret = zeCommandQueueCreate(ze_md->ze_context, device, &cq_desc, &cmdq);
     if (ret != ZE_RESULT_SUCCESS) {
+        ucs_error("ze_copy_iface: zeCommandQueueCreate failed with 0x%x", ret);
         return UCS_ERR_NO_DEVICE;
     }
 
     ret = zeCommandListCreate(ze_md->ze_context, device, &cl_desc, &cmdl);
     if (ret != ZE_RESULT_SUCCESS) {
+        ucs_error("ze_copy_iface: zeCommandListCreate failed with 0x%x", ret);
         zeCommandQueueDestroy(cmdq);
         return UCS_ERR_NO_DEVICE;
     }
@@ -246,6 +249,9 @@ static UCS_CLASS_INIT_FUNC(uct_ze_copy_iface_t, uct_md_h md,
     self->ze_cmdq = cmdq;
     self->ze_cmdl = cmdl;
     self->id      = ucs_generate_uuid((uintptr_t)self);
+
+    ucs_info("ze_copy_iface: initialized iface device=%p cmdq=%p cmdl=%p",
+             device, cmdq, cmdl);
 
     return UCS_OK;
 }
