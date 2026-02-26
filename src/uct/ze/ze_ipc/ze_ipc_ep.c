@@ -146,7 +146,7 @@ uct_ze_ipc_post_copy(uct_ep_h tl_ep, uint64_t remote_addr,
         return UCS_OK;
     }
 
-    /* Use cache to map IPC handle (with pidfd caching) */
+    /* Use cache to map IPC handle */
     status = uct_ze_ipc_map_memhandle(iface, key, iface->ze_context, iface->ze_device,
                                       &mapped_addr, &local_fd);
     if (status != UCS_OK) {

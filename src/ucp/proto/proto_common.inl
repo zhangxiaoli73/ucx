@@ -240,6 +240,11 @@ static UCS_F_ALWAYS_INLINE ucs_status_ptr_t ucp_proto_request_send_op_common(
 {
     ucs_string_buffer_t strb;
     ucs_status_t status;
+    struct timespec start1, end;
+    double elapsed_ms1;
+
+    clock_gettime(CLOCK_MONOTONIC, &start1);
+
 
     status = UCS_PROFILE_CALL(ucp_proto_request_lookup_proto, worker, ep, req,
                               proto_select, rkey_cfg_index, select_param,
@@ -266,6 +271,10 @@ static UCS_F_ALWAYS_INLINE ucs_status_ptr_t ucp_proto_request_send_op_common(
         ucs_string_buffer_cleanup(&strb);
     }
 
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    elapsed_ms1 = (end.tv_sec - start1.tv_sec) * 1000.0 + (end.tv_nsec - start1.tv_nsec) / 1000000.0;
+    printf("ucp_proto_request_send_op_common projection: whole time cost is %.3f ms \n", elapsed_ms1);
+
     return req + 1;
 }
 
@@ -284,6 +293,11 @@ ucp_proto_request_send_op(ucp_ep_h ep, ucp_proto_select_t *proto_select,
     ucs_status_t status;
     size_t msg_length;
     uint8_t sg_count;
+    struct timespec start1, end;
+    double elapsed_ms1;
+
+   clock_gettime(CLOCK_MONOTONIC, &start1);
+
 
     ucp_proto_request_send_init(req, ep, req_flags);
 
@@ -300,6 +314,11 @@ ucp_proto_request_send_op(ucp_ep_h ep, ucp_proto_select_t *proto_select,
                                 &req->send.state.dt_iter.mem_info, sg_count);
 
     msg_length = req->send.state.dt_iter.length + header_length;
+
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    elapsed_ms1 = (end.tv_sec - start1.tv_sec) * 1000.0 + (end.tv_nsec - start1.tv_nsec) / 1000000.0;
+    printf("ucp_proto_request_send_op projection: before ucp_proto_request_send_op_common time cost is %.3f ms \n", elapsed_ms1);
+
     return ucp_proto_request_send_op_common(worker, ep, proto_select,
                                             rkey_cfg_index, req, param,
                                             &sel_param, msg_length);

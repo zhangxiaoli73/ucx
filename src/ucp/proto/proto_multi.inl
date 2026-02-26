@@ -171,6 +171,10 @@ ucp_proto_multi_progress(ucp_request_t *req,
     ucp_datatype_iter_t next_iter;
     ucp_lane_index_t lane_idx;
     ucs_status_t status;
+    struct timespec start1, end;
+    double elapsed_ms1;
+
+    clock_gettime(CLOCK_MONOTONIC, &start1);
 
     ucs_assertv(req->send.multi_lane_idx < mpriv->num_lanes,
                 "lane_idx=%d num_lanes=%d", req->send.multi_lane_idx,
@@ -195,11 +199,17 @@ ucp_proto_multi_progress(ucp_request_t *req,
     ucp_datatype_iter_copy_position(&req->send.state.dt_iter, &next_iter,
                                     dt_mask);
     if (ucp_datatype_iter_is_end(&req->send.state.dt_iter)) {
+       printf("!!!!!!!!!!! go to completion funtion \n");
         return complete_func(req);
     }
 
     /* move to the next lane, in a round-robin fashion */
     ucp_proto_multi_advance_lane_idx(req, mpriv->num_lanes, lane_shift);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    elapsed_ms1 = (end.tv_sec - start1.tv_sec) * 1000.0 + (end.tv_nsec - start1.tv_nsec) / 1000000.0;
+
+    printf("ucp_proto_multi_progress projection: whole time cost is %.3f ms \n", elapsed_ms1);
 
     return UCS_INPROGRESS;
 }

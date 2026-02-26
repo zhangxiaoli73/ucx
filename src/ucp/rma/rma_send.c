@@ -373,6 +373,10 @@ ucs_status_ptr_t ucp_get_nbx(ucp_ep_h ep, void *buffer, size_t count,
     ucs_status_t status;
     ucp_request_t *req;
     uintptr_t datatype;
+    struct timespec start1, start2, start3, end;
+    double elapsed_ms1, elapsed_ms2, elapsed_ms3, elapsed_ms4;
+
+   clock_gettime(CLOCK_MONOTONIC, &start1);
 
     if (ucs_unlikely(param->op_attr_mask & UCP_OP_ATTR_FLAG_FORCE_IMM_CMPL)) {
         return UCS_STATUS_PTR(UCS_ERR_NO_RESOURCE);
@@ -380,7 +384,9 @@ ucs_status_ptr_t ucp_get_nbx(ucp_ep_h ep, void *buffer, size_t count,
 
     UCP_REQUEST_CHECK_PARAM(param);
     UCP_RMA_CHECK_PTR(worker->context, buffer, count);
+    clock_gettime(CLOCK_MONOTONIC, &start2);
     UCP_WORKER_THREAD_CS_ENTER_CONDITIONAL(worker);
+    clock_gettime(CLOCK_MONOTONIC, &start3);
 
     ucs_trace_req("get_nbx buffer %p count %zu remote_addr %" PRIx64
                   " rkey %p from %s cb %p",
@@ -415,6 +421,14 @@ ucs_status_ptr_t ucp_get_nbx(ucp_ep_h ep, void *buffer, size_t count,
                                          UCP_RKEY_RMA_PROTO(rkey->cache.rma_proto_index)->progress_get,
                                          rma_config->get_zcopy_thresh, param);
     }
+
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    elapsed_ms1 = (end.tv_sec - start1.tv_sec) * 1000.0 + (end.tv_nsec - start1.tv_nsec) / 1000000.0;
+    elapsed_ms2 = (start2.tv_sec - start1.tv_sec) * 1000.0 + (start2.tv_nsec - start1.tv_nsec) / 1000000.0;
+    elapsed_ms3 = (start3.tv_sec - start2.tv_sec) * 1000.0 + (start3.tv_nsec - start2.tv_nsec) / 1000000.0;
+    elapsed_ms4 = (end.tv_sec - start3.tv_sec) * 1000.0 + (end.tv_nsec - start3.tv_nsec) / 1000000.0;
+
+    printf("ucp_get_nbx projection: whole time cost is %.3f ms, preparation is %.3f ms, get param is %.3f ms, send is %.3f ms \n", elapsed_ms1, elapsed_ms2, elapsed_ms3, elapsed_ms4);
 
 out_unlock:
     UCP_WORKER_THREAD_CS_EXIT_CONDITIONAL(worker);

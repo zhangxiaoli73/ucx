@@ -310,6 +310,7 @@ static int UCS_F_ALWAYS_INLINE ucp_request_try_send(ucp_request_t *req)
         return 1;
     } else if (status == UCS_INPROGRESS) {
         /* Not completed, but made progress */
+        printf("zl_debug: still in progress for trying send \n");
         return 0;
     } else if (status == UCS_ERR_NO_RESOURCE) {
         /* No send resources, try to add to pending queue */
@@ -327,7 +328,18 @@ static int UCS_F_ALWAYS_INLINE ucp_request_try_send(ucp_request_t *req)
 static UCS_F_ALWAYS_INLINE void
 ucp_request_send(ucp_request_t *req)
 {
-    while (!ucp_request_try_send(req));
+    int count = 0;
+    ucs_status_t status = 0;
+    struct timespec start, end;
+    double elapsed_ms;
+    while (!status || count == 0) {
+        count = count + 1;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        status = ucp_request_try_send(req);
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        elapsed_ms = (end.tv_sec - start.tv_sec) * 1000.0 + (end.tv_nsec - start.tv_nsec) / 1000000.0;
+        printf("[ucp_request_send] send time is %.3f ms, try to send with cound %d \n", elapsed_ms, count);
+    }
 }
 
 static UCS_F_ALWAYS_INLINE
