@@ -385,8 +385,36 @@ ucs_status_ptr_t ucp_get_nbx(ucp_ep_h ep, void *buffer, size_t count,
     UCP_REQUEST_CHECK_PARAM(param);
     UCP_RMA_CHECK_PTR(worker->context, buffer, count);
     clock_gettime(CLOCK_MONOTONIC, &start2);
+
+    /* Diagnostic: Check worker flags and async mode */
+    printf("[DEBUG] Worker flags: 0x%lx, THREAD_MULTI=%d, async.mode=%d (0=poll,1=signal,2=thread_spinlock,3=thread_mutex)\n",
+           (unsigned long)worker->flags,
+           !!(worker->flags & UCP_WORKER_FLAG_THREAD_MULTI),
+           worker->async.mode);
+
+    /* Diagnostic: Check if lock is already held */
+    if (worker->flags & UCP_WORKER_FLAG_THREAD_MULTI) {
+        if (worker->async.mode == UCS_ASYNC_MODE_THREAD_SPINLOCK) {
+            pthread_t self = pthread_self();
+            int is_owner = (worker->async.thread.spinlock.owner == self);
+            printf("[DEBUG] Before lock: thread_id=%lu, lock_owner=%lu, is_owner=%d, lock_count=%d\n",
+                   (unsigned long)self,
+                   (unsigned long)worker->async.thread.spinlock.owner,
+                   is_owner,
+                   worker->async.thread.spinlock.count);
+        }
+    }
+
     UCP_WORKER_THREAD_CS_ENTER_CONDITIONAL(worker);
     clock_gettime(CLOCK_MONOTONIC, &start3);
+
+    /* Diagnostic: After acquiring lock */
+    if (worker->flags & UCP_WORKER_FLAG_THREAD_MULTI) {
+        if (worker->async.mode == UCS_ASYNC_MODE_THREAD_SPINLOCK) {
+            printf("[DEBUG] After lock: lock_count=%d\n",
+                   worker->async.thread.spinlock.count);
+        }
+    }
 
     ucs_trace_req("get_nbx buffer %p count %zu remote_addr %" PRIx64
                   " rkey %p from %s cb %p",

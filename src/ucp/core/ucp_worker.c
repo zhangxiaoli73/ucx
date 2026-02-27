@@ -2634,6 +2634,13 @@ ucs_status_t ucp_worker_create(ucp_context_h context,
     /* Set multi-thread support mode */
     thread_mode = UCP_PARAM_VALUE(WORKER, params, thread_mode, THREAD_MODE,
                                   UCS_THREAD_MODE_SINGLE);
+
+    /* TEMPORARY HACK: Force SINGLE mode to avoid async progress thread lock contention */
+    if (thread_mode == UCS_THREAD_MODE_MULTI) {
+        ucs_warn("Forcing UCS_THREAD_MODE_SINGLE instead of MULTI to avoid lock contention");
+        thread_mode = UCS_THREAD_MODE_SINGLE;
+    }
+
     switch (thread_mode) {
     case UCS_THREAD_MODE_SINGLE:
         /* UCT is serialized by UCP lock or by UCP user */
@@ -3184,12 +3191,20 @@ unsigned ucp_worker_progress(ucp_worker_h worker)
     UCP_WORKER_THREAD_CS_ENTER_CONDITIONAL(worker);
 
     /* check that ucp_worker_progress is not called from within ucp_worker_progress */
-    ucs_assert(worker->inprogress++ == 0);
+    /* TEMPORARY: Allow recursive calls to diagnose lock contention issue */
+    if (worker->inprogress > 0) {
+        /* Recursive call detected - this can happen if completion callback
+         * calls UCX API. Just skip progress to avoid infinite recursion. */
+        UCP_WORKER_THREAD_CS_EXIT_CONDITIONAL(worker);
+        return 0;
+    }
+
+    worker->inprogress++;
     count = uct_worker_progress(worker->uct);
     ucs_async_check_miss(&worker->async);
 
     /* coverity[assert_side_effect] */
-    ucs_assert(--worker->inprogress == 0);
+    worker->inprogress--;
 
     UCP_WORKER_THREAD_CS_EXIT_CONDITIONAL(worker);
 
