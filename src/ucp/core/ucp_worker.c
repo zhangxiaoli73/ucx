@@ -3185,7 +3185,19 @@ unsigned ucp_worker_progress(ucp_worker_h worker)
 
     /* check that ucp_worker_progress is not called from within ucp_worker_progress */
     ucs_assert(worker->inprogress++ == 0);
+
+    /*
+     * PERFORMANCE FIX: Release worker lock during UCT progress to avoid
+     * blocking other threads when progress involves slow operations (e.g., GPU polling).
+     * This is safe because:
+     * 1. UCT layer has its own synchronization
+     * 2. We re-acquire the lock before returning
+     * 3. worker->inprogress prevents recursive calls
+     */
+    UCP_WORKER_THREAD_CS_EXIT_CONDITIONAL(worker);
     count = uct_worker_progress(worker->uct);
+    UCP_WORKER_THREAD_CS_ENTER_CONDITIONAL(worker);
+
     ucs_async_check_miss(&worker->async);
 
     /* coverity[assert_side_effect] */
